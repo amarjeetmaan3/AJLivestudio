@@ -1,0 +1,6 @@
+<resources>
+    <style name="Theme.AJLiveStudio" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">#0B1330</item>
+        <item name="android:windowBackground">#0B1330</item>
+    </style>
+</resources>
