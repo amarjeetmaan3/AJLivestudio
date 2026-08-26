@@ -11,8 +11,8 @@ android {
         applicationId = "com.amarjeetmaan.ajlivestudio"
         minSdk = 24
         targetSdk = 34
-        versionCode = 12
-        versionName = "0.12.0" // Phase 12
+        versionCode = 13
+        versionName = "0.12.1" // StreamPack compile fixes
 
         vectorDrawables { useSupportLibrary = true }
     }
@@ -30,7 +30,10 @@ android {
     }
     kotlinOptions {
         jvmTarget = "17"
-        freeCompilerArgs += listOf("-Xskip-metadata-version-check")
+        freeCompilerArgs += listOf(
+            "-Xskip-metadata-version-check",
+            "-opt-in=androidx.compose.material3.ExperimentalMaterial3Api"
+        )
     }
 
     buildFeatures {
@@ -95,11 +98,11 @@ dependencies {
     implementation("org.json:json:20240303")
 
     // StreamPack — capture, encode, mux and send (RTMP) in one pipeline.
-    // This replaces the CameraX preview used in Phase 2: StreamPack owns
-    // the camera source directly so it can feed the encoder.
-    val streamPackVersion = "3.1.2"
+    // Version 3.2.0 confirmed against official KDoc (thibaultbee.github.io/StreamPack) —
+    // setConfig()/startStream(descriptor) do not exist in 3.1.2, only 3.2.0+.
+    val streamPackVersion = "3.2.0"
     implementation("io.github.thibaultbee.streampack:streampack-core:$streamPackVersion")
-    implementation("io.github.thibaultbee.streampack:streampack-ui:$streamPackVersion")
+    implementation("io.github.thibaultbee.streampack:streampack-compose:$streamPackVersion")
     implementation("io.github.thibaultbee.streampack:streampack-rtmp:$streamPackVersion")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
