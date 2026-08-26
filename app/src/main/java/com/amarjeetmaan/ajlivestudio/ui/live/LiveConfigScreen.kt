@@ -3,11 +3,13 @@ package com.amarjeetmaan.ajlivestudio.ui.live
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -66,7 +68,7 @@ fun LiveConfigScreen(
 }
 
 @Composable
-private fun CustomRtmpSection(
+private fun ColumnScope.CustomRtmpSection(
     viewModel: LiveConfigViewModel,
     onBack: () -> Unit,
     onContinueToPreview: (RtmpConfig) -> Unit,
@@ -109,7 +111,7 @@ private fun CustomRtmpSection(
 }
 
 @Composable
-private fun YouTubeDirectSection(
+private fun ColumnScope.YouTubeDirectSection(
     viewModel: YouTubeConfigViewModel,
     onBack: () -> Unit,
     onContinueToPreview: (RtmpConfig) -> Unit,
@@ -262,8 +264,9 @@ private fun NavButtons(onBack: () -> Unit, continueEnabled: Boolean, onContinue:
 @Composable
 private fun Modifier.clickable2(onClick: () -> Unit): Modifier =
     this.then(
-        androidx.compose.foundation.clickable(
+        Modifier.clickable(
             indication = null,
-            interactionSource = androidx.compose.runtime.remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
-        ) { onClick() }
+            interactionSource = androidx.compose.runtime.remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+            onClick = onClick
+        )
     )
