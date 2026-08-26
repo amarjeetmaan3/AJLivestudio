@@ -27,7 +27,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.amarjeetmaan.ajlivestudio.ui.live.RtmpConfig
 import com.amarjeetmaan.ajlivestudio.ui.overlay.OverlayLayer
@@ -44,13 +43,14 @@ import com.amarjeetmaan.ajlivestudio.ui.theme.CrimsonBright
 import com.amarjeetmaan.ajlivestudio.ui.theme.GoldPrimary
 import com.amarjeetmaan.ajlivestudio.ui.theme.LiveGreen
 import com.amarjeetmaan.ajlivestudio.ui.theme.NavyDeep
-import kotlinx.coroutines.launch
+import io.github.thibaultbee.streampack.compose.views.SourcePreview
 import kotlin.math.roundToInt
 
 /**
  * Full-screen preview + live control bar.
- * Preview is powered by StreamPack's own PreviewView (bound to the same
- * SingleStreamer that will encode + send when "GO LIVE" is pressed).
+ * Preview is powered by StreamPack's Compose-native SourcePreview, bound
+ * directly to the same SingleStreamer that encodes + sends when "GO LIVE"
+ * is pressed — no XML view interop needed.
  */
 @Composable
 fun CameraPreviewScreen(
@@ -64,7 +64,6 @@ fun CameraPreviewScreen(
 ) {
     val context = LocalContext.current
     val uiState = viewModel.uiState
-    val coroutineScope = rememberCoroutineScopeCompat()
 
     var showWbMenu by remember { mutableStateOf(false) }
     var showOverlayPanel by remember { mutableStateOf(false) }
@@ -83,18 +82,10 @@ fun CameraPreviewScreen(
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
 
-        AndroidView(
-            factory = { ctx ->
-                io.github.thibaultbee.streampack.views.PreviewView(ctx).apply {
-                    coroutineScope.launch {
-                        // Wait a tick for the engine to initialize before attaching.
-                        kotlinx.coroutines.delay(300)
-                        viewModel.attachPreview(this@apply)
-                    }
-                }
-            },
-            modifier = Modifier.fillMaxSize()
-        )
+        val streamer = viewModel.currentStreamer()
+        if (streamer != null && uiState.cameraReady) {
+            SourcePreview(streamer, modifier = Modifier.fillMaxSize())
+        }
 
         OverlayLayer(
             items = overlayViewModel.items,
@@ -371,5 +362,3 @@ private fun ControlIcon(
     }
 }
 
-@Composable
-private fun rememberCoroutineScopeCompat() = androidx.compose.runtime.rememberCoroutineScope()
