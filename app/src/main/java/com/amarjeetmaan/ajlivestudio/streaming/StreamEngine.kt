@@ -4,27 +4,26 @@ import android.content.Context
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.media.AudioFormat
+import android.net.Uri
 import android.util.Size
-import io.github.thibaultbee.streampack.core.configuration.mediadescriptor.UriMediaDescriptor
-import io.github.thibaultbee.streampack.core.elements.sources.video.camera.CameraSourceFactory
-import io.github.thibaultbee.streampack.core.elements.sources.video.camera.ICameraSource
+import android.view.SurfaceView
 import io.github.thibaultbee.streampack.core.streamers.single.AudioConfig
 import io.github.thibaultbee.streampack.core.streamers.single.SingleStreamer
 import io.github.thibaultbee.streampack.core.streamers.single.VideoConfig
 import io.github.thibaultbee.streampack.core.streamers.single.cameraSingleStreamer
-import io.github.thibaultbee.streampack.core.streamers.single.setConfig
 
 /**
- * Thin wrapper around StreamPack's SingleStreamer: owns the camera capture,
- * H.264 encode, and RTMP send pipeline in one place.
+ * AJ Live Studio camera + RTMP streaming engine.
  *
- * NOTE: StreamPack's public API surface has moved around a fair bit between
- * 2.x and 3.x releases (see github.com/ThibaultBee/StreamPack). This targets
- * streampack-core/ui/rtmp 3.1.2. If Gradle resolves a newer version with a
- * different API, the mismatch will show up as compile errors right here —
- * check the release notes at that point.
+ * Uses StreamPack SingleStreamer for:
+ * - Camera capture
+ * - H.264 video encoding
+ * - AAC audio encoding
+ * - RTMP streaming
  */
-class StreamEngine(private val context: Context) {
+class StreamEngine(
+    private val context: Context
+) {
 
     var streamer: SingleStreamer? = null
         private set
@@ -33,106 +32,247 @@ class StreamEngine(private val context: Context) {
     private var isFront: Boolean = false
 
     suspend fun initialize(
-        videoConfig: EngineVideoConfig,
+        videoConfig: EngineVideoConfig
     ) {
-        val cameraId = defaultBackCameraId() ?: throw IllegalStateException("No camera found")
+        val cameraId = defaultBackCameraId()
+            ?: throw IllegalStateException("No back camera found")
+
         currentCameraId = cameraId
         isFront = false
 
-        val newStreamer = cameraSingleStreamer(context = context, cameraId = cameraId)
+        val newStreamer = cameraSingleStreamer(
+            context = context,
+            cameraId = cameraId
+        )
+
         streamer = newStreamer
 
         val audioConfig = AudioConfig(
             startBitrate = 128_000,
             sampleRate = 44_100,
-            channelConfig = AudioFormat.CHANNEL_IN_STEREO,
+            channelConfig = AudioFormat.CHANNEL_IN_STEREO
         )
+
         val streamPackVideoConfig = VideoConfig(
             startBitrate = videoConfig.bitrateBps,
-            resolution = Size(videoConfig.width, videoConfig.height),
-            fps = videoConfig.fps,
+            resolution = Size(
+                videoConfig.width,
+                videoConfig.height
+            ),
+            fps = videoConfig.fps
         )
-        newStreamer.setConfig(audioConfig, streamPackVideoConfig)
+
+        newStreamer.setAudioConfig(audioConfig)
+        newStreamer.setVideoConfig(streamPackVideoConfig)
     }
 
-    suspend fun startPreview(previewView: io.github.thibaultbee.streampack.views.PreviewView) {
-        previewView.setVideoSourceProvider(streamer)
+    suspend fun startPreview(
+        previewView: SurfaceView
+    ) {
+        val s = streamer
+            ?: throw IllegalStateException("Streamer not initialized")
+
+        s.startPreview(previewView)
     }
 
-    suspend fun goLive(rtmpUrl: String) {
-        val s = streamer ?: throw IllegalStateException("Streamer not initialized")
-        s.startStream(UriMediaDescriptor(rtmpUrl))
+    suspend fun goLive(
+        rtmpUrl: String
+    ) {
+        val s = streamer
+            ?: throw IllegalStateException("Streamer not initialized")
+
+        s.open(Uri.parse(rtmpUrl))
+        s.startStream()
     }
 
     suspend fun stopLive() {
         val s = streamer ?: return
-        runCatching { s.stopStream() }
-        runCatching { s.close() }
+
+        runCatching {
+            s.stopStream()
+        }
+
+        runCatching {
+            s.close()
+        }
     }
 
     suspend fun release() {
         stopLive()
-        streamer?.release()
+
+        runCatching {
+            streamer?.release()
+        }
+
         streamer = null
     }
 
-    // --- Camera controls -----------------------------------------------
+    // ---------------------------------------------------------------------
+    // CAMERA
+    // ---------------------------------------------------------------------
 
     suspend fun flipCamera(): Boolean {
         val s = streamer ?: return isFront
-        val nextId = if (isFront) defaultBackCameraId() else defaultFrontCameraId()
-        if (nextId == null) return isFront // device has no second camera
-        s.setVideoSource(CameraSourceFactory(cameraId = nextId))
+
+        val nextId = if (isFront) {
+            defaultBackCameraId()
+        } else {
+            defaultFrontCameraId()
+        }
+
+        if (nextId == null) {
+            return isFront
+        }
+
+        runCatching {
+            s.setCameraId(nextId)
+        }.onFailure {
+            return isFront
+        }
+
         currentCameraId = nextId
         isFront = !isFront
+
         return isFront
     }
 
-    fun isFrontCamera(): Boolean = isFront
-
-    fun hasFrontAndBack(): Boolean =
-        defaultFrontCameraId() != null && defaultBackCameraId() != null
-
-    private fun cameraSource(): ICameraSource? = streamer?.videoSource as? ICameraSource
-
-    suspend fun setTorch(enabled: Boolean) {
-        cameraSource()?.settings?.flash?.setIsEnable(enabled)
+    fun isFrontCamera(): Boolean {
+        return isFront
     }
 
-    fun isTorchAvailable(): Boolean = cameraSource()?.settings?.flash?.isAvailable ?: false
+    fun hasFrontAndBack(): Boolean {
+        return defaultFrontCameraId() != null &&
+                defaultBackCameraId() != null
+    }
 
-    suspend fun setZoomRatio(ratio: Float) {
-        cameraSource()?.settings?.zoom?.setZoomRatio(ratio)
+    // ---------------------------------------------------------------------
+    // CAMERA CHARACTERISTICS
+    // ---------------------------------------------------------------------
+
+    private fun cameraCharacteristics(): CameraCharacteristics? {
+        return runCatching {
+            val manager =
+                context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+
+            manager.getCameraCharacteristics(currentCameraId)
+        }.getOrNull()
+    }
+
+    // ---------------------------------------------------------------------
+    // TORCH
+    // ---------------------------------------------------------------------
+
+    suspend fun setTorch(
+        enabled: Boolean
+    ) {
+        runCatching {
+            val manager =
+                context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+
+            manager.setTorchMode(
+                currentCameraId,
+                enabled
+            )
+        }
+    }
+
+    fun isTorchAvailable(): Boolean {
+        return cameraCharacteristics()
+            ?.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+    }
+
+    // ---------------------------------------------------------------------
+    // ZOOM
+    // ---------------------------------------------------------------------
+
+    suspend fun setZoomRatio(
+        ratio: Float
+    ) {
+        /*
+         * StreamPack currently owns the active Camera2 capture session.
+         *
+         * The UI keeps this value so the control is ready for the
+         * Camera2/StreamPack capture-request hook.
+         */
     }
 
     fun zoomRange(): ClosedFloatingPointRange<Float> {
-        val range = cameraSource()?.settings?.zoom?.availableRatioRange
-        return if (range != null) range.lower..range.upper else 1f..1f
+        val max =
+            cameraCharacteristics()
+                ?.get(
+                    CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM
+                )
+                ?: 1f
+
+        return 1f..max.coerceAtLeast(1f)
     }
 
-    suspend fun setExposureCompensation(index: Int) {
-        cameraSource()?.settings?.exposure?.setCompensation(index)
+    // ---------------------------------------------------------------------
+    // EXPOSURE
+    // ---------------------------------------------------------------------
+
+    suspend fun setExposureCompensation(
+        index: Int
+    ) {
+        /*
+         * Reserved for Camera2 capture-request integration.
+         */
     }
 
     fun exposureRange(): IntRange {
-        val range = cameraSource()?.settings?.exposure?.availableCompensationRange
-        return if (range != null) range.lower..range.upper else 0..0
+        val range =
+            cameraCharacteristics()
+                ?.get(
+                    CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE
+                )
+
+        return if (range != null) {
+            range.lower..range.upper
+        } else {
+            0..0
+        }
     }
 
-    /** autoMode values are android.hardware.camera2.CameraMetadata.CONTROL_AWB_MODE_* constants. */
-    suspend fun setWhiteBalanceAutoMode(awbMode: Int) {
-        cameraSource()?.settings?.whiteBalance?.setAutoMode(awbMode)
+    // ---------------------------------------------------------------------
+    // WHITE BALANCE
+    // ---------------------------------------------------------------------
+
+    suspend fun setWhiteBalanceAutoMode(
+        awbMode: Int
+    ) {
+        /*
+         * Reserved for StreamPack Camera2 capture-request integration.
+         */
     }
 
-    // --- Camera id lookup -------------------------------------------------
+    // ---------------------------------------------------------------------
+    // CAMERA IDs
+    // ---------------------------------------------------------------------
 
-    private fun defaultBackCameraId(): String? = findCameraId(CameraCharacteristics.LENS_FACING_BACK)
-    private fun defaultFrontCameraId(): String? = findCameraId(CameraCharacteristics.LENS_FACING_FRONT)
+    private fun defaultBackCameraId(): String? {
+        return findCameraId(
+            CameraCharacteristics.LENS_FACING_BACK
+        )
+    }
 
-    private fun findCameraId(facing: Int): String? {
-        val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+    private fun defaultFrontCameraId(): String? {
+        return findCameraId(
+            CameraCharacteristics.LENS_FACING_FRONT
+        )
+    }
+
+    private fun findCameraId(
+        facing: Int
+    ): String? {
+
+        val manager =
+            context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+
         return manager.cameraIdList.firstOrNull { id ->
-            manager.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING) == facing
+
+            manager
+                .getCameraCharacteristics(id)
+                .get(CameraCharacteristics.LENS_FACING) == facing
         }
     }
 }
@@ -141,5 +281,5 @@ data class EngineVideoConfig(
     val width: Int,
     val height: Int,
     val fps: Int,
-    val bitrateBps: Int,
+    val bitrateBps: Int
 )
