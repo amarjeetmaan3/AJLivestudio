@@ -5,7 +5,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -32,7 +34,14 @@ fun LiveConfigScreen(
 ) {
     var mode by remember { mutableStateOf(LiveMode.CUSTOM_RTMP) }
 
-    Column(modifier = Modifier.fillMaxSize().background(NavySurface).padding(20.dp)) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(NavySurface)
+            .verticalScroll(rememberScrollState())
+            .imePadding()
+            .padding(20.dp)
+    ) {
         Text("Go Live", style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(16.dp))
 
@@ -106,7 +115,7 @@ private fun ColumnScope.CustomRtmpSection(
         style = MaterialTheme.typography.labelSmall,
         color = TextSecondary
     )
-    Spacer(modifier = Modifier.weight(1f))
+    Spacer(modifier = Modifier.height(24.dp))
     NavButtons(onBack = onBack, continueEnabled = config.isValid(), onContinue = { onContinueToPreview(config) })
 }
 
@@ -125,8 +134,9 @@ private fun ColumnScope.YouTubeDirectSection(
     val signInLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        val account = authController.handleSignInResult(result.data)
-        viewModel.onSignedIn(account?.email)
+        authController.handleSignInResult(result.data)
+            .onSuccess { account -> viewModel.onSignedIn(account.email) }
+            .onFailure { error -> viewModel.onSignInFailed(error.message ?: "Sign-in failed") }
     }
 
     LaunchedEffect(Unit) {
@@ -151,7 +161,15 @@ private fun ColumnScope.YouTubeDirectSection(
                 colors = ButtonDefaults.buttonColors(containerColor = GoldPrimary),
                 shape = RoundedCornerShape(12.dp)
             ) { Text("Sign in with Google", fontWeight = FontWeight.Bold) }
-            Spacer(modifier = Modifier.weight(1f))
+            state.errorMessage?.let { message ->
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    message,
+                    color = androidx.compose.ui.graphics.Color(0xFFE23B4E),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            Spacer(modifier = Modifier.height(24.dp))
             NavButtons(onBack = onBack, continueEnabled = false, onContinue = {})
         }
 
@@ -194,7 +212,7 @@ private fun ColumnScope.YouTubeDirectSection(
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(it, color = androidx.compose.ui.graphics.Color(0xFFE23B4E), style = MaterialTheme.typography.labelSmall)
             }
-            Spacer(modifier = Modifier.weight(1f))
+            Spacer(modifier = Modifier.height(24.dp))
             Button(
                 onClick = {
                     val account = authController.lastSignedInAccount(context) ?: return@Button
@@ -230,7 +248,7 @@ private fun ColumnScope.YouTubeDirectSection(
                 Text("Broadcast created", style = MaterialTheme.typography.titleLarge)
                 Spacer(modifier = Modifier.height(8.dp))
                 Text("Watch URL: ${result.watchUrl}", style = MaterialTheme.typography.bodyMedium)
-                Spacer(modifier = Modifier.weight(1f))
+                Spacer(modifier = Modifier.height(24.dp))
                 Button(
                     onClick = {
                         onContinueToPreview(RtmpConfig(serverUrl = result.ingestUrl, streamKey = result.streamKey))
