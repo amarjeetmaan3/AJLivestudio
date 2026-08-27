@@ -43,14 +43,25 @@ import com.amarjeetmaan.ajlivestudio.ui.theme.CrimsonBright
 import com.amarjeetmaan.ajlivestudio.ui.theme.GoldPrimary
 import com.amarjeetmaan.ajlivestudio.ui.theme.LiveGreen
 import com.amarjeetmaan.ajlivestudio.ui.theme.NavyDeep
-import androidx.compose.ui.viewinterop.AndroidView
 import kotlin.math.roundToInt
 
 /**
  * Full-screen preview + live control bar.
- * Preview uses StreamPack's XML PreviewView (io.github.thibaultbee.streampack.views.PreviewView)
- * wrapped via AndroidView, bound to the streamer with setVideoSourceProvider —
- * both confirmed against StreamPack's official docs/changelog.
+ *
+ * NOTE on the live camera preview widget: StreamPack's own preview View
+ * class (io.github.thibaultbee.streampack.views.PreviewView, from the
+ * streampack-ui artifact) has failed to resolve at compile time despite
+ * being quoted verbatim across StreamPack's own docs/README/Maven pages —
+ * a genuine inconsistency I couldn't run to ground through documentation
+ * search alone. Rather than keep guessing at class paths and burning more
+ * build cycles, the preview widget is a placeholder for now. This does
+ * NOT block actual streaming — capture, encode, and RTMP send all happen
+ * on the streamer itself, independent of whether a preview View is
+ * attached. GO LIVE should work end-to-end; you just won't see a local
+ * preview yet. Wiring in the real preview is a focused follow-up once we
+ * can confirm the exact class name against your resolved AAR (e.g. by
+ * unzipping the streampack-ui-3.2.0.aar from your Gradle cache and
+ * listing its classes.jar contents).
  */
 @Composable
 fun CameraPreviewScreen(
@@ -82,14 +93,14 @@ fun CameraPreviewScreen(
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
 
-        val streamer = viewModel.currentStreamer()
-        AndroidView(
-            factory = { ctx -> io.github.thibaultbee.streampack.views.PreviewView(ctx) },
-            update = { previewView: io.github.thibaultbee.streampack.views.PreviewView ->
-                streamer?.let { previewView.setVideoSourceProvider(it) }
-            },
-            modifier = Modifier.fillMaxSize()
-        )
+        // Placeholder until the real StreamPack preview View class is confirmed — see note above.
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text(
+                if (uiState.cameraReady) "Camera ready — live preview coming soon" else "Initializing camera…",
+                color = Color.White.copy(alpha = 0.4f),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
 
         OverlayLayer(
             items = overlayViewModel.items,
