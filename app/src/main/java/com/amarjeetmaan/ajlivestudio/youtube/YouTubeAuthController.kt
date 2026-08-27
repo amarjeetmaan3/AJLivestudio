@@ -54,12 +54,25 @@ class YouTubeAuthController(context: Context) {
     fun lastSignedInAccount(context: Context): GoogleSignInAccount? =
         GoogleSignIn.getLastSignedInAccount(context)
 
-    fun handleSignInResult(data: Intent?): GoogleSignInAccount? =
+    fun handleSignInResult(data: Intent?): Result<GoogleSignInAccount> =
         runCatching {
             com.google.android.gms.auth.api.signin.GoogleSignIn
                 .getSignedInAccountFromIntent(data)
                 .getResult(com.google.android.gms.common.api.ApiException::class.java)
-        }.getOrNull()
+        }.recoverCatching { throwable ->
+            val apiException = throwable as? com.google.android.gms.common.api.ApiException
+            val message = if (apiException != null) {
+                "Google Sign-In failed (code ${apiException.statusCode}). " +
+                    when (apiException.statusCode) {
+                        10 -> "This is DEVELOPER_ERROR — almost always a mismatch between the SHA-1 fingerprint or package name registered in Google Cloud Console and this APK's actual signing certificate. See README."
+                        12501 -> "Sign-in was cancelled."
+                        else -> "Check Google Cloud Console OAuth setup — see README."
+                    }
+            } else {
+                "Google Sign-In failed: ${throwable.message}"
+            }
+            throw Exception(message)
+        }
 
     fun signOut() {
         signInClient.signOut()
