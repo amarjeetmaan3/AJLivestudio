@@ -4,6 +4,9 @@ import android.accounts.Account
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import java.security.MessageDigest
 import com.google.android.gms.auth.GoogleAuthUtil
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount
@@ -33,7 +36,7 @@ import kotlinx.coroutines.withContext
  * Without this setup, sign-in will fail with a developer-console error
  * regardless of whether this code is correct.
  */
-class YouTubeAuthController(context: Context) {
+class YouTubeAuthController(private val context: Context) {
 
     companion object {
         const val YOUTUBE_SCOPE = "https://www.googleapis.com/auth/youtube"
@@ -64,7 +67,7 @@ class YouTubeAuthController(context: Context) {
             val message = if (apiException != null) {
                 "Google Sign-In failed (code ${apiException.statusCode}). " +
                     when (apiException.statusCode) {
-                        10 -> "This is DEVELOPER_ERROR — almost always a mismatch between the SHA-1 fingerprint or package name registered in Google Cloud Console and this APK's actual signing certificate. See README."
+                        10 -> "This is DEVELOPER_ERROR. Package=${contextPackageName()}; APK SHA-1=${signingSha1()}. Register this exact package name + SHA-1 on the Android OAuth client in Google Cloud Console."
                         12501 -> "Sign-in was cancelled."
                         else -> "Check Google Cloud Console OAuth setup — see README."
                     }
@@ -76,6 +79,30 @@ class YouTubeAuthController(context: Context) {
 
     fun signOut() {
         signInClient.signOut()
+    }
+
+    private fun contextPackageName(): String =
+        context.packageName
+
+    private fun signingSha1(): String {
+        return runCatching {
+            val pm = context.packageManager
+            val info = if (Build.VERSION.SDK_INT >= 28) {
+                pm.getPackageInfo(context.packageName, PackageManager.GET_SIGNING_CERTIFICATES)
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getPackageInfo(context.packageName, PackageManager.GET_SIGNATURES)
+            }
+            val signatures = if (Build.VERSION.SDK_INT >= 28) {
+                info.signingInfo.apkContentsSigners
+            } else {
+                @Suppress("DEPRECATION")
+                info.signatures
+            }
+            MessageDigest.getInstance("SHA-1")
+                .digest(signatures.first().toByteArray())
+                .joinToString(":") { "%02X".format(it) }
+        }.getOrElse { "unavailable" }
     }
 
     /**
