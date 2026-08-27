@@ -102,7 +102,7 @@ dependencies {
     // setConfig()/startStream(descriptor) do not exist in 3.1.2, only 3.2.0+.
     val streamPackVersion = "3.2.0"
     implementation("io.github.thibaultbee.streampack:streampack-core:$streamPackVersion")
-    implementation("io.github.thibaultbee.streampack:streampack-compose:$streamPackVersion")
+    implementation("io.github.thibaultbee.streampack:streampack-ui:$streamPackVersion")
     implementation("io.github.thibaultbee.streampack:streampack-rtmp:$streamPackVersion")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
