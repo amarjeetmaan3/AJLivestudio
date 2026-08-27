@@ -246,7 +246,7 @@ fun CameraPreviewScreen(
                     LayoutPickerMenu(
                         expanded = showLayoutMenu,
                         onDismiss = { showLayoutMenu = false },
-                        onSelect = { layoutViewModel.setPreset(it) }
+                        onSelect = { layoutViewModel.selectPreset(it) }
                     )
                 }
             }
