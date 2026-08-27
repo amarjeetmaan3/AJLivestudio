@@ -85,7 +85,7 @@ fun CameraPreviewScreen(
         val streamer = viewModel.currentStreamer()
         AndroidView(
             factory = { ctx -> io.github.thibaultbee.streampack.views.PreviewView(ctx) },
-            update = { previewView ->
+            update = { previewView: io.github.thibaultbee.streampack.views.PreviewView ->
                 streamer?.let { previewView.setVideoSourceProvider(it) }
             },
             modifier = Modifier.fillMaxSize()
