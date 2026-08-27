@@ -9,7 +9,7 @@ class LayoutViewModel : ViewModel() {
     var preset by mutableStateOf(LayoutPreset.FULL_CAMERA)
         private set
 
-    fun setPreset(newPreset: LayoutPreset) {
+    fun selectPreset(newPreset: LayoutPreset) {
         preset = newPreset
     }
 }
