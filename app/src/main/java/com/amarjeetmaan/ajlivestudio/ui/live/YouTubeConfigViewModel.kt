@@ -28,7 +28,11 @@ class YouTubeConfigViewModel : ViewModel() {
         private set
 
     fun onSignedIn(email: String?) {
-        state = state.copy(flowState = YouTubeFlowState.SIGNED_IN, accountEmail = email)
+        state = state.copy(flowState = YouTubeFlowState.SIGNED_IN, accountEmail = email, errorMessage = null)
+    }
+
+    fun onSignInFailed(message: String) {
+        state = state.copy(flowState = YouTubeFlowState.SIGNED_OUT, errorMessage = message)
     }
 
     fun onSignedOut() {
