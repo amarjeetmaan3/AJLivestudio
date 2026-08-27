@@ -10,6 +10,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
@@ -83,6 +84,10 @@ private fun ColumnScope.CustomRtmpSection(
     onContinueToPreview: (RtmpConfig) -> Unit,
 ) {
     val config = viewModel.config
+    // Keep each RTMP field in its own saveable UI state. This prevents one field
+    // from being visually reset when the other field changes/recomposes.
+    var serverUrl by rememberSaveable { mutableStateOf(config.serverUrl) }
+    var streamKey by rememberSaveable { mutableStateOf(config.streamKey) }
 
     Text(
         "Enter your RTMP server URL and stream key",
@@ -90,8 +95,11 @@ private fun ColumnScope.CustomRtmpSection(
         modifier = Modifier.padding(bottom = 16.dp)
     )
     OutlinedTextField(
-        value = config.serverUrl,
-        onValueChange = viewModel::setServerUrl,
+        value = serverUrl,
+        onValueChange = { value ->
+            serverUrl = value
+            viewModel.setServerUrl(value)
+        },
         label = { Text("RTMP Server URL") },
         placeholder = { Text("rtmp://a.rtmp.youtube.com/live2") },
         singleLine = true,
@@ -100,8 +108,11 @@ private fun ColumnScope.CustomRtmpSection(
     )
     Spacer(modifier = Modifier.height(16.dp))
     OutlinedTextField(
-        value = config.streamKey,
-        onValueChange = viewModel::setStreamKey,
+        value = streamKey,
+        onValueChange = { value ->
+            streamKey = value
+            viewModel.setStreamKey(value)
+        },
         label = { Text("Stream Key") },
         placeholder = { Text("xxxx-xxxx-xxxx-xxxx") },
         singleLine = true,
@@ -115,8 +126,9 @@ private fun ColumnScope.CustomRtmpSection(
         style = MaterialTheme.typography.labelSmall,
         color = TextSecondary
     )
+    val uiConfig = config.copy(serverUrl = serverUrl, streamKey = streamKey)
     Spacer(modifier = Modifier.height(24.dp))
-    NavButtons(onBack = onBack, continueEnabled = config.isValid(), onContinue = { onContinueToPreview(config) })
+    NavButtons(onBack = onBack, continueEnabled = uiConfig.isValid(), onContinue = { onContinueToPreview(uiConfig) })
 }
 
 @Composable
