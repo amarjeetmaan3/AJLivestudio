@@ -9,7 +9,6 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.amarjeetmaan.ajlivestudio.audio.AudioController
-import com.amarjeetmaan.ajlivestudio.camera.DualCameraCapability
 import com.amarjeetmaan.ajlivestudio.streaming.EngineVideoConfig
 import com.amarjeetmaan.ajlivestudio.streaming.StreamEngine
 import com.amarjeetmaan.ajlivestudio.ui.setup.BitratePreset
@@ -23,6 +22,7 @@ class CameraViewModel : ViewModel() {
 
     private var engine: StreamEngine? = null
     private var audioController: AudioController? = null
+    private var activePreviewSurface: Surface? = null
 
     fun initialize(context: Context, setupState: StudioSetupState) {
         val streamEngine = StreamEngine(context)
@@ -35,9 +35,6 @@ class CameraViewModel : ViewModel() {
             audioRoute = audio.currentInputRoute(),
         )
 
-        // Portrait/Landscape here is the STREAM's orientation, not the app
-        // UI's — our controls stay in portrait regardless (see manifest),
-        // this only affects how the encoded video looks to viewers.
         val targetRotation = when (setupState.orientation) {
             com.amarjeetmaan.ajlivestudio.ui.setup.StreamOrientation.LANDSCAPE -> android.view.Surface.ROTATION_90
             com.amarjeetmaan.ajlivestudio.ui.setup.StreamOrientation.PORTRAIT -> android.view.Surface.ROTATION_0
@@ -58,8 +55,6 @@ class CameraViewModel : ViewModel() {
                 uiState = uiState.copy(
                     cameraReady = true,
                     isTorchAvailable = streamEngine.isTorchAvailable(),
-                    dualCameraAvailable = streamEngine.hasFrontAndBack(),
-                    dualCameraConcurrentSupported = DualCameraCapability(context).isSupported(),
                     minZoomRatio = streamEngine.zoomRange().start,
                     maxZoomRatio = streamEngine.zoomRange().endInclusive,
                     zoomRatio = streamEngine.zoomRange().start,
@@ -72,23 +67,15 @@ class CameraViewModel : ViewModel() {
         }
     }
 
-    private var activePreviewSurface: Surface? = null
-
     fun startPreview(surface: Surface) {
         activePreviewSurface = surface
-        viewModelScope.launch {
-            engine?.startCameraPreview(surface)
-        }
+        viewModelScope.launch { engine?.startCameraPreview(surface) }
     }
 
     fun stopPreview() {
         activePreviewSurface = null
-        viewModelScope.launch {
-            engine?.stopCameraPreview()
-        }
+        viewModelScope.launch { engine?.stopCameraPreview() }
     }
-
-    fun currentStreamer() = engine?.streamer
 
     fun goLive(rtmpUrl: String) {
         val streamEngine = engine ?: return
@@ -96,9 +83,7 @@ class CameraViewModel : ViewModel() {
         viewModelScope.launch {
             runCatching { streamEngine.goLive(rtmpUrl) }
                 .onSuccess { uiState = uiState.copy(streamState = StreamState.LIVE) }
-                .onFailure { e ->
-                    uiState = uiState.copy(streamState = StreamState.ERROR, errorMessage = e.message ?: "Connection failed")
-                }
+                .onFailure { e -> uiState = uiState.copy(streamState = StreamState.ERROR, errorMessage = e.message ?: "Connection failed") }
         }
     }
 
@@ -123,14 +108,9 @@ class CameraViewModel : ViewModel() {
                         maxZoomRatio = streamEngine.zoomRange().endInclusive,
                         zoomRatio = streamEngine.zoomRange().start,
                     )
-                    // Flipping swaps the underlying camera source, which can
-                    // drop the previously-bound preview surface — rebind it
-                    // so the live view doesn't go blank after flip.
                     activePreviewSurface?.let { engine?.startCameraPreview(it) }
                 }
-                .onFailure { e ->
-                    uiState = uiState.copy(errorMessage = "Flip camera failed: ${e.message}")
-                }
+                .onFailure { e -> uiState = uiState.copy(errorMessage = "Flip camera failed: ${e.message}") }
         }
     }
 
@@ -187,19 +167,13 @@ class CameraViewModel : ViewModel() {
         refreshAudioRoute()
     }
 
-    // --- Screen Share Wiring Updated ---
     fun onScreenSharePermissionResult(granted: Boolean, data: Intent?) {
         uiState = uiState.copy(screenSharePermissionGranted = granted)
-        
         if (granted && data != null) {
             viewModelScope.launch {
-                runCatching { 
-                    engine?.startScreenShare(data) 
-                }.onSuccess {
-                    uiState = uiState.copy(screenShareWiredToStream = true)
-                }.onFailure { e ->
-                    uiState = uiState.copy(errorMessage = "Screen share failed: ${e.message}")
-                }
+                runCatching { engine?.startScreenShare(data) }
+                    .onSuccess { uiState = uiState.copy(screenShareWiredToStream = true) }
+                    .onFailure { e -> uiState = uiState.copy(errorMessage = "Screen share failed: ${e.message}") }
             }
         }
     }
