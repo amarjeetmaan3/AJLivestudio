@@ -1,55 +1,34 @@
-package com.amarjeetmaan.ajlivestudio.ui.camera
+package com.amarjeetmaan.ajlivestudio.audio
 
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
+import android.content.Context
+import android.media.AudioManager
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun AudioMixerSheet(
-    uiState: CameraUiState,
-    onGainChange: (Int) -> Unit,
-    onMusicVolumeChange: (Int) -> Unit,
-    onConnectBluetooth: () -> Unit,
-    onDismiss: () -> Unit
-) {
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(modifier = Modifier.padding(24.dp).fillMaxWidth()) {
-            Text("Audio Mixer", style = MaterialTheme.typography.titleLarge)
-            Spacer(modifier = Modifier.height(24.dp))
-            
-            Text("Mic Gain: ${uiState.micGainPercent}%", style = MaterialTheme.typography.labelMedium)
-            Slider(
-                value = uiState.micGainPercent.toFloat(),
-                onValueChange = { onGainChange(it.toInt()) },
-                valueRange = 0f..200f
-            )
-            
-            Spacer(modifier = Modifier.height(16.dp))
-            
-            Text("Music Volume: ${uiState.musicVolumePercent}%", style = MaterialTheme.typography.labelMedium)
-            Slider(
-                value = uiState.musicVolumePercent.toFloat(),
-                onValueChange = { onMusicVolumeChange(it.toInt()) },
-                valueRange = 0f..100f
-            )
+enum class AudioRoute {
+    BUILTIN_MIC, BLUETOOTH, WIRED_HEADSET
+}
 
-            Spacer(modifier = Modifier.height(24.dp))
-            
-            // यहाँ हमने audioRoute की जगह audioRouteLabel कर दिया है
-            Text("Current Route: ${uiState.audioRouteLabel}", color = MaterialTheme.colorScheme.primary)
-            
-            Spacer(modifier = Modifier.height(16.dp))
-            
-            Button(
-                onClick = onConnectBluetooth,
-                modifier = Modifier.fillMaxWidth().height(48.dp)
-            ) {
-                Text("Connect Bluetooth Mic")
-            }
-            Spacer(modifier = Modifier.height(32.dp))
+class AudioController(private val context: Context) {
+    private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
+    fun isMicMuted(): Boolean = audioManager.isMicrophoneMute
+
+    fun setMicMuted(muted: Boolean) {
+        audioManager.isMicrophoneMute = muted
+    }
+
+    fun currentInputRoute(): AudioRoute {
+        return when {
+            audioManager.isBluetoothScoOn -> AudioRoute.BLUETOOTH
+            audioManager.isWiredHeadsetOn -> AudioRoute.WIRED_HEADSET
+            else -> AudioRoute.BUILTIN_MIC
+        }
+    }
+
+    fun startBluetoothScoIfAvailable() {
+        try {
+            audioManager.startBluetoothSco()
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 }
