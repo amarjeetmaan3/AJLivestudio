@@ -12,6 +12,7 @@ import com.amarjeetmaan.ajlivestudio.streaming.EngineVideoConfig
 import com.amarjeetmaan.ajlivestudio.streaming.StreamEngine
 import com.amarjeetmaan.ajlivestudio.ui.setup.BitratePreset
 import com.amarjeetmaan.ajlivestudio.ui.setup.StudioSetupState
+import android.view.Surface
 import kotlinx.coroutines.launch
 
 class CameraViewModel : ViewModel() {
@@ -60,7 +61,17 @@ class CameraViewModel : ViewModel() {
             }
         }
     }
+     fun startPreview(surface: Surface) {
+    viewModelScope.launch {
+        streamEngine.startCameraPreview(surface)
+    }
+}
 
+fun stopPreview() {
+    viewModelScope.launch {
+        streamEngine.stopCameraPreview()
+    }
+}
     /** Exposes the underlying streamer so the screen can render SourcePreview(streamer). */
     fun currentStreamer() = engine?.streamer
 
