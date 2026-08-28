@@ -16,7 +16,7 @@ data class CameraUiState(
     val isMicMuted: Boolean = false,
     val micGainPercent: Int = 100,
     val musicVolumePercent: Int = 100,
-    val audioRoute: String = "Unknown",
+    val audioRouteLabel: String = "Unknown", 
     val screenSharePermissionGranted: Boolean = false,
     val screenShareWiredToStream: Boolean = false,
     val errorMessage: String? = null
