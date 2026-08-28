@@ -8,6 +8,7 @@ import android.media.AudioFormat
 import android.util.Size
 import android.view.Surface
 import io.github.thibaultbee.streampack.core.elements.sources.video.camera.ICameraSource
+import io.github.thibaultbee.streampack.core.elements.sources.video.screen.ScreenSource
 import io.github.thibaultbee.streampack.core.interfaces.setCameraId
 import io.github.thibaultbee.streampack.core.interfaces.startPreview
 import io.github.thibaultbee.streampack.core.interfaces.startStream
@@ -29,14 +30,16 @@ class StreamEngine(private val context: Context) {
     private var currentCameraId: String = ""
     private var isFront: Boolean = false
     
-    // Track screen share state (सिर्फ Intent सेव करेंगे)
+    // Screen Share Tracking
     private var screenShareIntent: Intent? = null
+    private var screenSource: ScreenSource? = null
 
     suspend fun initialize(videoConfig: EngineVideoConfig, targetRotation: Int? = null) {
         val cameraId = defaultBackCameraId() ?: throw IllegalStateException("No camera found")
         currentCameraId = cameraId
         isFront = false
 
+        // Base Streamer Initialization
         val newStreamer = cameraSingleStreamer(context = context, cameraId = cameraId)
         streamer = newStreamer
 
@@ -74,19 +77,44 @@ class StreamEngine(private val context: Context) {
         streamer?.stopPreview()
     }
 
-    // --- Screen Share & Overlay Integration Hooks ---
-    
+    // --- Screen Share Implementation ---
     suspend fun startScreenShare(intent: Intent) {
-        // हम सिस्टम से मिला परमिशन टोकन (Intent) यहाँ सुरक्षित रख रहे हैं।
-        // जैसे ही हम MixerStreamer (Phase 2) सेटअप करेंगे, यह टोकन सीधे मिक्सर में जाएगा।
         screenShareIntent = intent
+        val s = streamer ?: throw IllegalStateException("Streamer not initialized")
+        
+        try {
+            // सिस्टम से ScreenSource बनाएँ
+            val newScreenSource = ScreenSource(context = context, mediaProjectionIntent = intent)
+            screenSource = newScreenSource
+            
+            // SingleStreamer में हम एक साथ दो वीडियो नहीं भेज सकते (Mixer की जरूरत होती है)।
+            // इसलिए हम स्क्रीन शेयर चालू होने पर कैमरे को हटाकर स्क्रीन सोर्स सेट कर रहे हैं।
+            s.videoInput?.source = newScreenSource
+            
+        } catch (e: Exception) {
+            e.printStackTrace()
+            screenShareIntent = null
+        }
     }
 
     suspend fun stopScreenShare() {
-        screenShareIntent = null
+        val s = streamer
+        try {
+            // स्क्रीन शेयर बंद होने पर वापस कैमरा चालू करें
+            val cameraId = if (isFront) defaultFrontCameraId() else defaultBackCameraId()
+            cameraId?.let { id ->
+                s?.setCameraId(id)
+            }
+            screenSource?.release()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        } finally {
+            screenSource = null
+            screenShareIntent = null
+        }
     }
 
-    // ------------------------------------------------
+    // -----------------------------------
 
     suspend fun goLive(rtmpUrl: String) {
         val s = streamer ?: throw IllegalStateException("Streamer not initialized")
@@ -107,6 +135,10 @@ class StreamEngine(private val context: Context) {
 
     suspend fun flipCamera(): Boolean {
         val s = streamer ?: return isFront
+        
+        // अगर स्क्रीन शेयर चल रहा है तो फ्लिप काम नहीं करेगा
+        if (screenSource != null) return isFront 
+
         val nextId = if (isFront) defaultBackCameraId() else defaultFrontCameraId()
         if (nextId == null) return isFront
         s.setCameraId(nextId)
