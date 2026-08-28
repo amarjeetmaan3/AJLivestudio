@@ -14,7 +14,6 @@ import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.Layers
-import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.ScreenShare
@@ -39,13 +38,8 @@ import com.amarjeetmaan.ajlivestudio.ui.live.RtmpConfig
 import com.amarjeetmaan.ajlivestudio.ui.overlay.OverlayLayer
 import com.amarjeetmaan.ajlivestudio.ui.overlay.OverlayPanel
 import com.amarjeetmaan.ajlivestudio.ui.overlay.OverlayViewModel
-import com.amarjeetmaan.ajlivestudio.ui.scene.SceneBar
-import com.amarjeetmaan.ajlivestudio.ui.scene.SceneViewModel
 import com.amarjeetmaan.ajlivestudio.ui.setup.StudioSetupState
 import com.amarjeetmaan.ajlivestudio.screenshare.ScreenShareController
-import com.amarjeetmaan.ajlivestudio.ui.layout.LayoutPickerMenu
-import com.amarjeetmaan.ajlivestudio.ui.layout.LayoutViewModel
-import com.amarjeetmaan.ajlivestudio.ui.layout.LayoutZonesOverlay
 import com.amarjeetmaan.ajlivestudio.ui.theme.CrimsonBright
 import com.amarjeetmaan.ajlivestudio.ui.theme.GoldPrimary
 import com.amarjeetmaan.ajlivestudio.ui.theme.LiveGreen
@@ -59,15 +53,12 @@ fun CameraPreviewScreen(
     onBack: () -> Unit,
     viewModel: CameraViewModel = viewModel(),
     overlayViewModel: OverlayViewModel = viewModel(),
-    sceneViewModel: SceneViewModel = viewModel(),
-    layoutViewModel: LayoutViewModel = viewModel(),
 ) {
     val context = LocalContext.current
     val uiState = viewModel.uiState
 
     var showWbMenu by remember { mutableStateOf(false) }
     var showOverlayPanel by remember { mutableStateOf(false) }
-    var showLayoutMenu by remember { mutableStateOf(false) }
     var showAudioMixer by remember { mutableStateOf(false) }
     
     val screenShareController = remember { ScreenShareController(context) }
@@ -80,7 +71,6 @@ fun CameraPreviewScreen(
         )
     }
 
-    // --- FIX: Check actual user choice for Orientation ---
     val isLandscape = setupState.orientation == com.amarjeetmaan.ajlivestudio.ui.setup.StreamOrientation.LANDSCAPE
     
     DisposableEffect(isLandscape) {
@@ -101,7 +91,6 @@ fun CameraPreviewScreen(
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
 
-        // --- FIX: Dynamic Aspect Ratio based on exact Orientation ---
         if (uiState.cameraReady) {
             val previewRatio = if (isLandscape) 16f / 9f else 9f / 16f
 
@@ -145,8 +134,6 @@ fun CameraPreviewScreen(
             onDrag = { id, x, y -> overlayViewModel.updatePosition(id, x, y) }
         )
 
-        LayoutZonesOverlay(preset = layoutViewModel.preset)
-
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -181,7 +168,6 @@ fun CameraPreviewScreen(
                     )
                 }
             }
-            SceneBar(sceneViewModel = sceneViewModel, overlayViewModel = overlayViewModel)
         }
 
         uiState.errorMessage?.let { message ->
@@ -267,18 +253,6 @@ fun CameraPreviewScreen(
                             )
                         }
                     }
-                }
-                Box {
-                    ControlIcon(
-                        icon = Icons.Filled.GridView,
-                        label = "Layout",
-                        onClick = { showLayoutMenu = true }
-                    )
-                    LayoutPickerMenu(
-                        expanded = showLayoutMenu,
-                        onDismiss = { showLayoutMenu = false },
-                        onSelect = { layoutViewModel.selectPreset(it) }
-                    )
                 }
             }
 
