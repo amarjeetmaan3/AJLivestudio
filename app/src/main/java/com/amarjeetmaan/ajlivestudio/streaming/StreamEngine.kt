@@ -29,7 +29,7 @@ class StreamEngine(private val context: Context) {
     private var currentCameraId: String = ""
     private var isFront: Boolean = false
     
-    // सिर्फ Intent (टोकन) सेव करेंगे, Mixer वाले फेज़ के लिए
+    // स्क्रीन शेयर (MediaProjection) टोकन को सुरक्षित रखने के लिए
     private var screenShareIntent: Intent? = null
 
     suspend fun initialize(videoConfig: EngineVideoConfig, targetRotation: Int? = null) {
@@ -37,6 +37,7 @@ class StreamEngine(private val context: Context) {
         currentCameraId = cameraId
         isFront = false
 
+        // बेस एन्कोडिंग पाइपलाइन
         val newStreamer = cameraSingleStreamer(context = context, cameraId = cameraId)
         streamer = newStreamer
 
@@ -74,7 +75,10 @@ class StreamEngine(private val context: Context) {
         streamer?.stopPreview()
     }
 
-    // --- Screen Share Hooks ---
+    // --- SCREEN SHARE & OVERLAYS (MEDIA PROJECTION) ---
+    // यह फ़ंक्शन सिस्टम से मिले परमिशन टोकन (Intent) को सेव करता है।
+    // अगले अपडेट में, हम इस टोकन का उपयोग करके Android का VIRTUAL_DISPLAY 
+    // बनाएंगे, जो पूरी स्क्रीन (Camera + Overlays) को रिकॉर्ड करके स्ट्रीम करेगा।
     suspend fun startScreenShare(intent: Intent) {
         screenShareIntent = intent
     }
@@ -82,7 +86,7 @@ class StreamEngine(private val context: Context) {
     suspend fun stopScreenShare() {
         screenShareIntent = null
     }
-    // --------------------------
+    // --------------------------------------------------
 
     suspend fun goLive(rtmpUrl: String) {
         val s = streamer ?: throw IllegalStateException("Streamer not initialized")
