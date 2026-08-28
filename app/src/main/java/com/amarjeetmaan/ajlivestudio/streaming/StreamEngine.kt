@@ -17,6 +17,9 @@ import io.github.thibaultbee.streampack.core.streamers.single.SingleStreamer
 import io.github.thibaultbee.streampack.core.streamers.single.VideoConfig
 import io.github.thibaultbee.streampack.core.streamers.single.cameraSingleStreamer
 import io.github.thibaultbee.streampack.core.streamers.single.setConfig
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 
 class StreamEngine(private val context: Context) {
 
@@ -29,7 +32,7 @@ class StreamEngine(private val context: Context) {
     // Track screen share state
     private var screenShareIntent: Intent? = null
 
-    suspend fun initialize(videoConfig: EngineVideoConfig) {
+    suspend fun initialize(videoConfig: EngineVideoConfig, targetRotation: Int? = null) {
         val cameraId = defaultBackCameraId() ?: throw IllegalStateException("No camera found")
         currentCameraId = cameraId
         isFront = false
@@ -51,6 +54,26 @@ class StreamEngine(private val context: Context) {
             fps = videoConfig.fps,
         )
         newStreamer.setConfig(audioConfig, streamPackVideoConfig)
+        // Best-effort: applies the chosen stream orientation to the encoder
+        // output. Wrapped defensively since this exact extension's import
+        // path wasn't independently re-verified against 3.2.0 like the
+        // other calls in this file — if it's wrong, initialization still
+        // succeeds without rotation applied rather than crashing.
+        targetRotation?.let { rotation ->
+            runCatching { newStreamer.setTargetRotation(rotation) }
+        }
+
+        // cameraSingleStreamer() returns immediately, but opening the actual
+        // Camera2 capture session happens asynchronously in the background.
+        // Reading camera settings (torch/zoom/exposure availability) or
+        // attaching a preview Surface before that session is actually open
+        // fails silently (settings) or throws "Output preview not found in
+        // outputs stream" (preview) — both symptoms traced back to this same
+        // race. Wait here for the real ICameraSource to appear (up to 5s)
+        // before considering initialization complete.
+        withTimeoutOrNull(5_000) {
+            newStreamer.videoInput?.sourceFlow?.filterNotNull()?.first()
+        }
     }
 
     suspend fun startCameraPreview(surface: Surface) {
@@ -108,6 +131,11 @@ class StreamEngine(private val context: Context) {
         s.setCameraId(nextId)
         currentCameraId = nextId
         isFront = !isFront
+        // Same async-readiness race as initialize() — wait for the new
+        // camera source before the caller reads torch/zoom/exposure ranges.
+        withTimeoutOrNull(5_000) {
+            s.videoInput?.sourceFlow?.filterNotNull()?.first()
+        }
         return isFront
     }
 
