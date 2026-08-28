@@ -17,7 +17,21 @@ android {
         vectorDrawables { useSupportLibrary = true }
     }
 
+    // नया Permanent Keystore ब्लॉक
+    signingConfigs {
+        create("permanentDebug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
+        // डिबग बिल्ड को नए Keystore से लिंक किया गया
+        getByName("debug") {
+            signingConfig = signingConfigs.getByName("permanentDebug")
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
