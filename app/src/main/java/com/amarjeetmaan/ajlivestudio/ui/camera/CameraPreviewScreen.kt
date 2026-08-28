@@ -65,11 +65,17 @@ fun CameraPreviewScreen(
     var showOverlayPanel by remember { mutableStateOf(false) }
     var showLayoutMenu by remember { mutableStateOf(false) }
     var showAudioMixer by remember { mutableStateOf(false) }
+    
     val screenShareController = remember { ScreenShareController(context) }
+    
+    // फिक्स: यहाँ हमने result.data (टोकन) को ViewModel में पास कर दिया है
     val screenSharePermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        viewModel.onScreenSharePermissionResult(screenShareController.isResultGranted(result.resultCode))
+        viewModel.onScreenSharePermissionResult(
+            granted = screenShareController.isResultGranted(result.resultCode),
+            data = result.data 
+        )
     }
 
     androidx.compose.runtime.LaunchedEffect(Unit) {
@@ -97,7 +103,6 @@ fun CameraPreviewScreen(
                 }
             )
         } else {
-            // Shows briefly while camera is turning on
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(
                     "Initializing camera…",
