@@ -32,7 +32,7 @@ class CameraViewModel : ViewModel() {
         audioController = audio
         uiState = uiState.copy(
             isMicMuted = audio.isMicMuted(),
-            audioRoute = audio.currentInputRoute(),
+            audioRouteLabel = audio.currentInputRoute().toString(),
         )
 
         val targetRotation = when (setupState.orientation) {
@@ -159,7 +159,7 @@ class CameraViewModel : ViewModel() {
 
     fun refreshAudioRoute() {
         val audio = audioController ?: return
-        uiState = uiState.copy(audioRoute = audio.currentInputRoute())
+        uiState = uiState.copy(audioRouteLabel = audio.currentInputRoute().toString())
     }
 
     fun connectBluetoothMic() {
