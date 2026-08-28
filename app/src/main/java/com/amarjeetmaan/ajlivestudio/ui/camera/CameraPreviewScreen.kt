@@ -3,6 +3,7 @@ package com.amarjeetmaan.ajlivestudio.ui.camera
 import android.graphics.SurfaceTexture
 import android.view.Surface
 import android.view.TextureView
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -82,11 +83,13 @@ fun CameraPreviewScreen(
         viewModel.initialize(context, setupState)
     }
 
+    // चेक करें कि क्या हम लाइव हैं
+    val isLive = uiState.streamState == StreamState.LIVE
+
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
 
         // --- Live Camera Preview Surface (Stretch Fix Applied) ---
         if (uiState.cameraReady) {
-            // कैमरा स्ट्रेच होने से रोकने के लिए रिज़ॉल्यूशन के हिसाब से Ratio फिक्स करें
             val isLandscape = setupState.resolution.width > setupState.resolution.height
             val previewRatio = if (isLandscape) 16f / 9f else 9f / 16f
 
@@ -94,7 +97,7 @@ fun CameraPreviewScreen(
                 AndroidView(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .aspectRatio(previewRatio) // <-- यह स्ट्रेचिंग रोकेगा!
+                        .aspectRatio(previewRatio)
                         .background(Color.Black),
                     factory = { ctx ->
                         TextureView(ctx).apply {
@@ -122,53 +125,57 @@ fun CameraPreviewScreen(
                 )
             }
         }
-        // --------------------------------------------------------
 
+        // --- Overlays (ये हमेशा दिखेंगे) ---
         OverlayLayer(
             items = overlayViewModel.items,
-            editable = true,
+            editable = !isLive, // लाइव होने पर ड्रैग/एडिट बंद करें
             webReloadTick = overlayViewModel.webReloadTick,
             onDrag = { id, x, y -> overlayViewModel.updatePosition(id, x, y) }
         )
 
         LayoutZonesOverlay(preset = layoutViewModel.preset)
 
-        // Top bar
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .align(Alignment.TopCenter)
-                .background(NavyDeep.copy(alpha = 0.55f))
+        // --- Top Bar (सिर्फ तब दिखेगा जब लाइव नहीं होंगे) ---
+        AnimatedVisibility(
+            visible = !isLive,
+            modifier = Modifier.align(Alignment.TopCenter)
         ) {
-            Row(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
+                    .background(NavyDeep.copy(alpha = 0.55f))
             ) {
-                TextButton(onClick = onBack, enabled = uiState.streamState != StreamState.LIVE) {
-                    Text("← Setup", color = Color.White)
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    val (dotColor, label) = when (uiState.streamState) {
-                        StreamState.IDLE -> Color.Gray to "Not live"
-                        StreamState.CONNECTING -> GoldPrimary to "Connecting…"
-                        StreamState.LIVE -> LiveGreen to "LIVE"
-                        StreamState.ERROR -> CrimsonBright to "Error"
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(onClick = onBack, enabled = uiState.streamState != StreamState.LIVE) {
+                        Text("← Setup", color = Color.White)
                     }
-                    Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(dotColor))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(label, color = Color.White, style = MaterialTheme.typography.labelSmall)
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text(
-                        "${setupState.resolution.label} · ${setupState.frameRate.value}fps",
-                        color = Color.White.copy(alpha = 0.7f),
-                        style = MaterialTheme.typography.labelSmall
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        val (dotColor, label) = when (uiState.streamState) {
+                            StreamState.IDLE -> Color.Gray to "Not live"
+                            StreamState.CONNECTING -> GoldPrimary to "Connecting…"
+                            StreamState.LIVE -> LiveGreen to "LIVE"
+                            StreamState.ERROR -> CrimsonBright to "Error"
+                        }
+                        Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(dotColor))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(label, color = Color.White, style = MaterialTheme.typography.labelSmall)
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            "${setupState.resolution.label} · ${setupState.frameRate.value}fps",
+                            color = Color.White.copy(alpha = 0.7f),
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
                 }
+                SceneBar(sceneViewModel = sceneViewModel, overlayViewModel = overlayViewModel)
             }
-            SceneBar(sceneViewModel = sceneViewModel, overlayViewModel = overlayViewModel)
         }
 
         uiState.errorMessage?.let { message ->
@@ -184,170 +191,170 @@ fun CameraPreviewScreen(
             )
         }
 
-        // Bottom control bar
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .align(Alignment.BottomCenter)
-                .background(NavyDeep.copy(alpha = 0.8f))
-                .padding(bottom = 16.dp, top = 10.dp)
+        // --- Bottom Control Bar (लाइव होने पर छुप जाएगा) ---
+        AnimatedVisibility(
+            visible = !isLive,
+            modifier = Modifier.align(Alignment.BottomCenter)
         ) {
-            // Exposure slider
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
-                verticalAlignment = Alignment.CenterVertically
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(NavyDeep.copy(alpha = 0.8f))
+                    .padding(bottom = 16.dp, top = 10.dp)
             ) {
-                Text("EV", color = Color.White, style = MaterialTheme.typography.labelSmall)
-                Slider(
-                    value = uiState.exposureIndex.toFloat(),
-                    onValueChange = { viewModel.setExposure(it.roundToInt()) },
-                    valueRange = uiState.exposureMin.toFloat()..(if (uiState.exposureMax > uiState.exposureMin) uiState.exposureMax.toFloat() else uiState.exposureMin.toFloat() + 1f),
-                    colors = SliderDefaults.colors(thumbColor = GoldPrimary, activeTrackColor = GoldPrimary),
-                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
-                )
-                Text("${uiState.exposureIndex}", color = Color.White, style = MaterialTheme.typography.labelSmall)
-            }
-
-            // Zoom slider
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("Zoom", color = Color.White, style = MaterialTheme.typography.labelSmall)
-                Slider(
-                    value = uiState.zoomRatio,
-                    onValueChange = { viewModel.setZoom(it) },
-                    valueRange = uiState.minZoomRatio..(if (uiState.maxZoomRatio > uiState.minZoomRatio) uiState.maxZoomRatio else uiState.minZoomRatio + 1f),
-                    colors = SliderDefaults.colors(thumbColor = GoldPrimary, activeTrackColor = GoldPrimary),
-                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
-                )
-            }
-
-            Spacer(modifier = Modifier.height(4.dp))
-
-            // Row 1: camera-related controls
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                ControlIcon(
-                    icon = Icons.Filled.Cameraswitch,
-                    label = "Flip",
-                    enabled = uiState.streamState != StreamState.LIVE,
-                    onClick = { viewModel.flip() }
-                )
-                ControlIcon(
-                    icon = if (uiState.isTorchOn) Icons.Filled.FlashOn else Icons.Filled.FlashOff,
-                    label = "Torch",
-                    tint = if (uiState.isTorchOn) GoldPrimary else Color.White,
-                    enabled = uiState.isTorchAvailable,
-                    onClick = { viewModel.toggleTorch() }
-                )
-                Box {
-                    ControlIcon(
-                        icon = Icons.Filled.WbAuto,
-                        label = uiState.whiteBalance.label,
-                        onClick = { showWbMenu = true }
-                    )
-                    DropdownMenu(expanded = showWbMenu, onDismissRequest = { showWbMenu = false }) {
-                        WhiteBalancePreset.entries.forEach { preset ->
-                            DropdownMenuItem(
-                                text = { Text(preset.label) },
-                                onClick = { viewModel.setWhiteBalance(preset); showWbMenu = false }
-                            )
-                        }
-                    }
-                }
-                Box {
-                    ControlIcon(
-                        icon = Icons.Filled.GridView,
-                        label = "Layout",
-                        onClick = { showLayoutMenu = true }
-                    )
-                    LayoutPickerMenu(
-                        expanded = showLayoutMenu,
-                        onDismiss = { showLayoutMenu = false },
-                        onSelect = { layoutViewModel.selectPreset(it) }
+                // Exposure slider
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("EV", color = Color.White, style = MaterialTheme.typography.labelSmall)
+                    Slider(
+                        value = uiState.exposureIndex.toFloat(),
+                        onValueChange = { viewModel.setExposure(it.roundToInt()) },
+                        valueRange = uiState.exposureMin.toFloat()..(if (uiState.exposureMax > uiState.exposureMin) uiState.exposureMax.toFloat() else uiState.exposureMin.toFloat() + 1f),
+                        colors = SliderDefaults.colors(thumbColor = GoldPrimary, activeTrackColor = GoldPrimary),
+                        modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
                     )
                 }
-            }
 
-            Spacer(modifier = Modifier.height(4.dp))
+                // Zoom slider
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Zoom", color = Color.White, style = MaterialTheme.typography.labelSmall)
+                    Slider(
+                        value = uiState.zoomRatio,
+                        onValueChange = { viewModel.setZoom(it) },
+                        valueRange = uiState.minZoomRatio..(if (uiState.maxZoomRatio > uiState.minZoomRatio) uiState.maxZoomRatio else uiState.minZoomRatio + 1f),
+                        colors = SliderDefaults.colors(thumbColor = GoldPrimary, activeTrackColor = GoldPrimary),
+                        modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
+                    )
+                }
 
-            // Row 2: production controls (audio, overlays, screen)
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                ControlIcon(
-                    icon = if (uiState.isMicMuted) Icons.Filled.MicOff else Icons.Filled.Mic,
-                    label = if (uiState.isMicMuted) "Muted" else "Mic",
-                    tint = if (uiState.isMicMuted) CrimsonBright else Color.White,
-                    onClick = { viewModel.toggleMic() }
-                )
-                ControlIcon(
-                    icon = Icons.Filled.Layers,
-                    label = "Overlays",
-                    onClick = { showOverlayPanel = true }
-                )
-                ControlIcon(
-                    icon = Icons.Filled.ScreenShare,
-                    label = if (uiState.screenSharePermissionGranted) "Screen On" else "Screen",
-                    tint = if (uiState.screenSharePermissionGranted) GoldPrimary else Color.White,
-                    onClick = { 
-                        if (uiState.screenSharePermissionGranted) {
-                            // TODO: Add stop sharing logic to UI
-                        } else {
-                            screenSharePermissionLauncher.launch(screenShareController.createCaptureIntent()) 
+                Spacer(modifier = Modifier.height(4.dp))
+
+                // Row 1: camera-related controls
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    ControlIcon(
+                        icon = Icons.Filled.Cameraswitch,
+                        label = "Flip",
+                        enabled = uiState.streamState != StreamState.LIVE,
+                        onClick = { viewModel.flip() }
+                    )
+                    ControlIcon(
+                        icon = if (uiState.isTorchOn) Icons.Filled.FlashOn else Icons.Filled.FlashOff,
+                        label = "Torch",
+                        tint = if (uiState.isTorchOn) GoldPrimary else Color.White,
+                        enabled = uiState.isTorchAvailable,
+                        onClick = { viewModel.toggleTorch() }
+                    )
+                    Box {
+                        ControlIcon(
+                            icon = Icons.Filled.WbAuto,
+                            label = uiState.whiteBalance.label,
+                            onClick = { showWbMenu = true }
+                        )
+                        DropdownMenu(expanded = showWbMenu, onDismissRequest = { showWbMenu = false }) {
+                            WhiteBalancePreset.entries.forEach { preset ->
+                                DropdownMenuItem(
+                                    text = { Text(preset.label) },
+                                    onClick = { viewModel.setWhiteBalance(preset); showWbMenu = false }
+                                )
+                            }
                         }
                     }
-                )
-                ControlIcon(
-                    icon = Icons.Filled.Tune,
-                    label = "Audio mixer",
-                    onClick = { showAudioMixer = true }
-                )
+                    Box {
+                        ControlIcon(
+                            icon = Icons.Filled.GridView,
+                            label = "Layout",
+                            onClick = { showLayoutMenu = true }
+                        )
+                        LayoutPickerMenu(
+                            expanded = showLayoutMenu,
+                            onDismiss = { showLayoutMenu = false },
+                            onSelect = { layoutViewModel.selectPreset(it) }
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                // Row 2: production controls
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    ControlIcon(
+                        icon = if (uiState.isMicMuted) Icons.Filled.MicOff else Icons.Filled.Mic,
+                        label = if (uiState.isMicMuted) "Muted" else "Mic",
+                        tint = if (uiState.isMicMuted) CrimsonBright else Color.White,
+                        onClick = { viewModel.toggleMic() }
+                    )
+                    ControlIcon(
+                        icon = Icons.Filled.Layers,
+                        label = "Overlays",
+                        onClick = { showOverlayPanel = true }
+                    )
+                    ControlIcon(
+                        icon = Icons.Filled.ScreenShare,
+                        label = if (uiState.screenSharePermissionGranted) "Screen On" else "Screen",
+                        tint = if (uiState.screenSharePermissionGranted) GoldPrimary else Color.White,
+                        onClick = { 
+                            if (!uiState.screenSharePermissionGranted) {
+                                screenSharePermissionLauncher.launch(screenShareController.createCaptureIntent()) 
+                            }
+                        }
+                    )
+                    ControlIcon(
+                        icon = Icons.Filled.Tune,
+                        label = "Audio mixer",
+                        onClick = { showAudioMixer = true }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Button(
+                    onClick = { viewModel.goLive(rtmpConfig.fullUrl()) },
+                    enabled = uiState.cameraReady && uiState.streamState != StreamState.CONNECTING,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).height(52.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = GoldPrimary),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text(
+                        if (uiState.streamState == StreamState.CONNECTING) "CONNECTING…" else "GO LIVE",
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                    )
+                }
             }
+        }
 
-            Spacer(modifier = Modifier.height(6.dp))
-            Spacer(modifier = Modifier.height(10.dp))
-
+        // --- Floating STOP Button (सिर्फ लाइव होने पर दिखेगा) ---
+        if (isLive) {
             Button(
-                onClick = {
-                    if (uiState.streamState == StreamState.LIVE) {
-                        viewModel.stopLive()
-                    } else {
-                        viewModel.goLive(rtmpConfig.fullUrl())
-                    }
-                },
-                enabled = uiState.cameraReady && uiState.streamState != StreamState.CONNECTING,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).height(52.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (uiState.streamState == StreamState.LIVE) CrimsonBright else GoldPrimary
-                ),
-                shape = RoundedCornerShape(12.dp)
+                onClick = { viewModel.stopLive() },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(24.dp)
+                    .height(48.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = CrimsonBright.copy(alpha = 0.8f)),
+                shape = RoundedCornerShape(24.dp)
             ) {
-                Text(
-                    when (uiState.streamState) {
-                        StreamState.LIVE -> "STOP LIVE"
-                        StreamState.CONNECTING -> "CONNECTING…"
-                        else -> "GO LIVE"
-                    },
-                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
-                )
+                Text("STOP LIVE", fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
             }
         }
     }
 
+    // Panels
     if (showOverlayPanel) {
-        OverlayPanel(
-            viewModel = overlayViewModel,
-            onDismiss = { showOverlayPanel = false }
-        )
+        OverlayPanel(viewModel = overlayViewModel, onDismiss = { showOverlayPanel = false })
     }
-
     if (showAudioMixer) {
         AudioMixerSheet(
             uiState = uiState,
