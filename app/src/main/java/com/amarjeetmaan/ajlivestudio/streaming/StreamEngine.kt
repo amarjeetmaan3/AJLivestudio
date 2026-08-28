@@ -5,10 +5,13 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.media.AudioFormat
 import android.util.Size
+import android.view.Surface // Added import
 import io.github.thibaultbee.streampack.core.elements.sources.video.camera.CameraSourceFactory
 import io.github.thibaultbee.streampack.core.elements.sources.video.camera.ICameraSource
 import io.github.thibaultbee.streampack.core.interfaces.setCameraId
+import io.github.thibaultbee.streampack.core.interfaces.startPreview // Added import
 import io.github.thibaultbee.streampack.core.interfaces.startStream
+import io.github.thibaultbee.streampack.core.interfaces.stopPreview // Added import
 import io.github.thibaultbee.streampack.core.streamers.single.AudioConfig
 import io.github.thibaultbee.streampack.core.streamers.single.SingleStreamer
 import io.github.thibaultbee.streampack.core.streamers.single.VideoConfig
@@ -61,6 +64,23 @@ class StreamEngine(private val context: Context) {
         // encoding/streaming, which reads frames from the camera source
         // directly, independent of whether a preview is attached.
     }
+    
+    // --- New Preview Controls ------------------------------------------
+
+    suspend fun startCameraPreview(surface: Surface) {
+        val s = streamer ?: return
+        try {
+            s.startPreview(surface)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    suspend fun stopCameraPreview() {
+        streamer?.stopPreview()
+    }
+
+    // -------------------------------------------------------------------
 
     suspend fun goLive(rtmpUrl: String) {
         val s = streamer ?: throw IllegalStateException("Streamer not initialized")
