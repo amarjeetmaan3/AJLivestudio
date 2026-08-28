@@ -8,6 +8,7 @@ import android.media.AudioFormat
 import android.util.Size
 import android.view.Surface
 import io.github.thibaultbee.streampack.core.elements.sources.video.camera.ICameraSource
+import io.github.thibaultbee.streampack.core.elements.sources.video.screen.ScreenSource
 import io.github.thibaultbee.streampack.core.interfaces.setCameraId
 import io.github.thibaultbee.streampack.core.interfaces.startPreview
 import io.github.thibaultbee.streampack.core.interfaces.startStream
@@ -29,8 +30,9 @@ class StreamEngine(private val context: Context) {
     private var currentCameraId: String = ""
     private var isFront: Boolean = false
     
-    // Track screen share state
+    // Track screen share state and source
     private var screenShareIntent: Intent? = null
+    private var screenSource: ScreenSource? = null
 
     suspend fun initialize(videoConfig: EngineVideoConfig, targetRotation: Int? = null) {
         val cameraId = defaultBackCameraId() ?: throw IllegalStateException("No camera found")
@@ -54,23 +56,11 @@ class StreamEngine(private val context: Context) {
             fps = videoConfig.fps,
         )
         newStreamer.setConfig(audioConfig, streamPackVideoConfig)
-        // Best-effort: applies the chosen stream orientation to the encoder
-        // output. Wrapped defensively since this exact extension's import
-        // path wasn't independently re-verified against 3.2.0 like the
-        // other calls in this file — if it's wrong, initialization still
-        // succeeds without rotation applied rather than crashing.
+        
         targetRotation?.let { rotation ->
             runCatching { newStreamer.setTargetRotation(rotation) }
         }
 
-        // cameraSingleStreamer() returns immediately, but opening the actual
-        // Camera2 capture session happens asynchronously in the background.
-        // Reading camera settings (torch/zoom/exposure availability) or
-        // attaching a preview Surface before that session is actually open
-        // fails silently (settings) or throws "Output preview not found in
-        // outputs stream" (preview) — both symptoms traced back to this same
-        // race. Wait here for the real ICameraSource to appear (up to 5s)
-        // before considering initialization complete.
         withTimeoutOrNull(5_000) {
             newStreamer.videoInput?.sourceFlow?.filterNotNull()?.first()
         }
@@ -95,14 +85,31 @@ class StreamEngine(private val context: Context) {
         screenShareIntent = intent
         val s = streamer ?: throw IllegalStateException("Streamer not initialized")
         
-        // TODO: In the Mixer implementation phase, this intent is passed to 
-        // a ScreenSourceBuilder and added to the Mixer's video sources alongside the camera.
-        // This ensures the token is safely stored and ready for the Mixer layout.
+        try {
+            // Create a new Screen Source using the token provided by the system
+            val source = ScreenSource(context = context, mediaProjectionIntent = intent)
+            screenSource = source
+            
+            // NOTE: In the upcoming Mixer implementation phase, this source will be 
+            // added to the Mixer's video sources alongside the camera.
+            s.videoInput?.let { 
+                // Ready for AudioVideoMixer integration
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            screenShareIntent = null
+        }
     }
 
     suspend fun stopScreenShare() {
-        screenShareIntent = null
-        // TODO: Remove screen source from the Mixer
+        try {
+            screenSource?.release()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        } finally {
+            screenSource = null
+            screenShareIntent = null
+        }
     }
 
     // ------------------------------------------------
@@ -131,8 +138,7 @@ class StreamEngine(private val context: Context) {
         s.setCameraId(nextId)
         currentCameraId = nextId
         isFront = !isFront
-        // Same async-readiness race as initialize() — wait for the new
-        // camera source before the caller reads torch/zoom/exposure ranges.
+        
         withTimeoutOrNull(5_000) {
             s.videoInput?.sourceFlow?.filterNotNull()?.first()
         }
