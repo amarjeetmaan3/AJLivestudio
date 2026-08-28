@@ -38,6 +38,7 @@ fun AudioMixerSheet(
 
             Spacer(modifier = Modifier.height(24.dp))
             
+            // यहाँ हमने audioRoute की जगह audioRouteLabel कर दिया है
             Text("Current Route: ${uiState.audioRouteLabel}", color = MaterialTheme.colorScheme.primary)
             
             Spacer(modifier = Modifier.height(16.dp))
