@@ -1,0 +1,21 @@
+name: Generate Static Keystore
+on: workflow_dispatch
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create Keystore
+        run: keytool -genkey -v -keystore app/debug.keystore -alias androiddebugkey -storepass android -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "C=IN, O=AJLiveStudio, CN=Amarjeet"
+      - name: Print SHA-1 (Save this for Google Console)
+        run: keytool -list -v -keystore app/debug.keystore -alias androiddebugkey -storepass android -keypass android
+      - name: Commit to GitHub
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add app/debug.keystore
+          git commit -m "Add permanent debug keystore"
+          git push
