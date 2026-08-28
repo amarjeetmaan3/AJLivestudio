@@ -8,7 +8,6 @@ import android.util.Size
 import io.github.thibaultbee.streampack.core.elements.sources.video.camera.CameraSourceFactory
 import io.github.thibaultbee.streampack.core.elements.sources.video.camera.ICameraSource
 import io.github.thibaultbee.streampack.core.interfaces.setCameraId
-import io.github.thibaultbee.streampack.core.interfaces.startPreview
 import io.github.thibaultbee.streampack.core.interfaces.startStream
 import io.github.thibaultbee.streampack.core.streamers.single.AudioConfig
 import io.github.thibaultbee.streampack.core.streamers.single.SingleStreamer
@@ -54,7 +53,13 @@ class StreamEngine(private val context: Context) {
             fps = videoConfig.fps,
         )
         newStreamer.setConfig(audioConfig, streamPackVideoConfig)
-        newStreamer.startPreview()
+        // startPreview() requires a preview Surface already attached to the
+        // streamer's outputs. Since the preview widget is a placeholder in
+        // this build (see CameraPreviewScreen.kt note), there's no surface
+        // to preview into yet — calling it would throw "Output preview not
+        // found in outputs stream". Skipping it here does NOT affect actual
+        // encoding/streaming, which reads frames from the camera source
+        // directly, independent of whether a preview is attached.
     }
 
     suspend fun goLive(rtmpUrl: String) {
