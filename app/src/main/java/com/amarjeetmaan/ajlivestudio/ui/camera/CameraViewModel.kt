@@ -1,6 +1,7 @@
 package com.amarjeetmaan.ajlivestudio.ui.camera
 
 import android.content.Context
+import android.content.Intent
 import android.view.Surface
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -62,7 +63,6 @@ class CameraViewModel : ViewModel() {
         }
     }
 
-    // --- Preview Controls Updated ---
     fun startPreview(surface: Surface) {
         viewModelScope.launch {
             engine?.startCameraPreview(surface)
@@ -74,9 +74,7 @@ class CameraViewModel : ViewModel() {
             engine?.stopCameraPreview()
         }
     }
-    // --------------------------------
 
-    /** Exposes the underlying streamer so the screen can render SourcePreview(streamer). */
     fun currentStreamer() = engine?.streamer
 
     fun goLive(rtmpUrl: String) {
@@ -142,8 +140,6 @@ class CameraViewModel : ViewModel() {
         viewModelScope.launch { runCatching { streamEngine.setWhiteBalanceAutoMode(preset.awbMode) } }
     }
 
-    // --- Audio (Phase 4) ------------------------------------------------
-
     fun toggleMic() {
         val audio = audioController ?: return
         val newMuted = !uiState.isMicMuted
@@ -169,12 +165,25 @@ class CameraViewModel : ViewModel() {
         refreshAudioRoute()
     }
 
-    fun onScreenSharePermissionResult(granted: Boolean) {
+    // --- Screen Share Wiring Updated ---
+    fun onScreenSharePermissionResult(granted: Boolean, data: Intent?) {
         uiState = uiState.copy(screenSharePermissionGranted = granted)
+        
+        if (granted && data != null) {
+            viewModelScope.launch {
+                runCatching { 
+                    engine?.startScreenShare(data) 
+                }.onSuccess {
+                    uiState = uiState.copy(screenShareWiredToStream = true)
+                }.onFailure { e ->
+                    uiState = uiState.copy(errorMessage = "Screen share failed: ${e.message}")
+                }
+            }
+        }
     }
 
     private fun resolveBitrateBps(preset: BitratePreset, widthHint: Int): Int {
-        val kbps = preset.kbps ?: if (widthHint >= 1920) 5000 else 3000 // Auto default
+        val kbps = preset.kbps ?: if (widthHint >= 1920) 5000 else 3000
         return kbps * 1000
     }
 
