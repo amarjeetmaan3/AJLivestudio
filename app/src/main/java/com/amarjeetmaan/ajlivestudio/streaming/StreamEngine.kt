@@ -8,7 +8,6 @@ import android.media.AudioFormat
 import android.util.Size
 import android.view.Surface
 import io.github.thibaultbee.streampack.core.elements.sources.video.camera.ICameraSource
-import io.github.thibaultbee.streampack.core.elements.sources.video.screen.ScreenSource
 import io.github.thibaultbee.streampack.core.interfaces.setCameraId
 import io.github.thibaultbee.streampack.core.interfaces.startPreview
 import io.github.thibaultbee.streampack.core.interfaces.startStream
@@ -30,18 +29,14 @@ class StreamEngine(private val context: Context) {
     private var currentCameraId: String = ""
     private var isFront: Boolean = false
     
-    // Track screen share state and source
+    // Track screen share state (सिर्फ Intent सेव करेंगे)
     private var screenShareIntent: Intent? = null
-    private var screenSource: ScreenSource? = null
 
     suspend fun initialize(videoConfig: EngineVideoConfig, targetRotation: Int? = null) {
         val cameraId = defaultBackCameraId() ?: throw IllegalStateException("No camera found")
         currentCameraId = cameraId
         isFront = false
 
-        // Note: For advanced Layouts/Overlays in StreamPack 3.x, this will 
-        // eventually transition from 'cameraSingleStreamer' to an 'AudioVideoMixer' setup.
-        // For now, this establishes the base encoding pipeline.
         val newStreamer = cameraSingleStreamer(context = context, cameraId = cameraId)
         streamer = newStreamer
 
@@ -82,34 +77,13 @@ class StreamEngine(private val context: Context) {
     // --- Screen Share & Overlay Integration Hooks ---
     
     suspend fun startScreenShare(intent: Intent) {
+        // हम सिस्टम से मिला परमिशन टोकन (Intent) यहाँ सुरक्षित रख रहे हैं।
+        // जैसे ही हम MixerStreamer (Phase 2) सेटअप करेंगे, यह टोकन सीधे मिक्सर में जाएगा।
         screenShareIntent = intent
-        val s = streamer ?: throw IllegalStateException("Streamer not initialized")
-        
-        try {
-            // Create a new Screen Source using the token provided by the system
-            val source = ScreenSource(context = context, mediaProjectionIntent = intent)
-            screenSource = source
-            
-            // NOTE: In the upcoming Mixer implementation phase, this source will be 
-            // added to the Mixer's video sources alongside the camera.
-            s.videoInput?.let { 
-                // Ready for AudioVideoMixer integration
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            screenShareIntent = null
-        }
     }
 
     suspend fun stopScreenShare() {
-        try {
-            screenSource?.release()
-        } catch (e: Exception) {
-            e.printStackTrace()
-        } finally {
-            screenSource = null
-            screenShareIntent = null
-        }
+        screenShareIntent = null
     }
 
     // ------------------------------------------------
