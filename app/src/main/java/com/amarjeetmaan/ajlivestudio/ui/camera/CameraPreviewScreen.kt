@@ -1,7 +1,8 @@
 package com.amarjeetmaan.ajlivestudio.ui.camera
 
-import android.view.SurfaceHolder
-import android.view.SurfaceView
+import android.graphics.SurfaceTexture
+import android.view.Surface
+import android.view.TextureView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -85,20 +86,34 @@ fun CameraPreviewScreen(
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
 
         // --- Live Camera Preview Surface ---
+        // TextureView, not SurfaceView: SurfaceView renders on its own
+        // hardware layer that punches through the normal View hierarchy,
+        // so Compose content placed after it (overlays, text) does not
+        // reliably draw on top — a well-known Compose+SurfaceView
+        // limitation. TextureView participates in normal View compositing,
+        // so overlays render correctly above it. StreamPack's startPreview()
+        // accepts either (per its own docs: "SurfaceView, a TextureView, a
+        // Surface...").
         if (uiState.cameraReady) {
             AndroidView(
                 modifier = Modifier.fillMaxSize(),
                 factory = { ctx ->
-                    SurfaceView(ctx).apply {
-                        holder.addCallback(object : SurfaceHolder.Callback {
-                            override fun surfaceCreated(holder: SurfaceHolder) {
-                                viewModel.startPreview(holder.surface)
+                    TextureView(ctx).apply {
+                        surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                            override fun onSurfaceTextureAvailable(
+                                surfaceTexture: SurfaceTexture, width: Int, height: Int
+                            ) {
+                                viewModel.startPreview(Surface(surfaceTexture))
                             }
-                            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
-                            override fun surfaceDestroyed(holder: SurfaceHolder) {
+                            override fun onSurfaceTextureSizeChanged(
+                                surfaceTexture: SurfaceTexture, width: Int, height: Int
+                            ) {}
+                            override fun onSurfaceTextureDestroyed(surfaceTexture: SurfaceTexture): Boolean {
                                 viewModel.stopPreview()
+                                return true
                             }
-                        })
+                            override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) {}
+                        }
                     }
                 }
             )
