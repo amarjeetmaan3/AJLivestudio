@@ -80,9 +80,9 @@ fun CameraPreviewScreen(
         )
     }
 
-    // --- PROFESSIONAL FIX: Orientation Lock ---
-    // यह स्क्रीन को आपके चुने गए रिज़ॉल्यूशन (Landscape या Portrait) के हिसाब से लॉक कर देगा
-    val isLandscape = setupState.resolution.width > setupState.resolution.height
+    // --- FIX: Check actual user choice for Orientation ---
+    val isLandscape = setupState.orientation == com.amarjeetmaan.ajlivestudio.ui.setup.StreamOrientation.LANDSCAPE
+    
     DisposableEffect(isLandscape) {
         val activity = context as? Activity
         activity?.requestedOrientation = if (isLandscape) {
@@ -101,7 +101,7 @@ fun CameraPreviewScreen(
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
 
-        // --- PROFESSIONAL FIX: Camera Stretch Prevention ---
+        // --- FIX: Dynamic Aspect Ratio based on exact Orientation ---
         if (uiState.cameraReady) {
             val previewRatio = if (isLandscape) 16f / 9f else 9f / 16f
 
@@ -109,7 +109,7 @@ fun CameraPreviewScreen(
                 AndroidView(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .aspectRatio(previewRatio) // यह कैमरे को स्क्रीन पर आड़ा-टेढ़ा होने से रोकेगा
+                        .aspectRatio(previewRatio)
                         .background(Color.Black),
                     factory = { ctx ->
                         TextureView(ctx).apply {
@@ -137,7 +137,6 @@ fun CameraPreviewScreen(
                 )
             }
         }
-        // ---------------------------------------------------
 
         OverlayLayer(
             items = overlayViewModel.items,
@@ -148,7 +147,6 @@ fun CameraPreviewScreen(
 
         LayoutZonesOverlay(preset = layoutViewModel.preset)
 
-        // Top bar
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -199,7 +197,6 @@ fun CameraPreviewScreen(
             )
         }
 
-        // Bottom control bar
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -207,7 +204,6 @@ fun CameraPreviewScreen(
                 .background(NavyDeep.copy(alpha = 0.8f))
                 .padding(bottom = 16.dp, top = 10.dp)
         ) {
-            // Exposure slider
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -223,7 +219,6 @@ fun CameraPreviewScreen(
                 Text("${uiState.exposureIndex}", color = Color.White, style = MaterialTheme.typography.labelSmall)
             }
 
-            // Zoom slider
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -240,7 +235,6 @@ fun CameraPreviewScreen(
 
             Spacer(modifier = Modifier.height(4.dp))
 
-            // Row 1: camera-related controls
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
@@ -290,7 +284,6 @@ fun CameraPreviewScreen(
 
             Spacer(modifier = Modifier.height(4.dp))
 
-            // Row 2: production controls (audio, overlays, screen)
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
