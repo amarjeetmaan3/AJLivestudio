@@ -35,6 +35,14 @@ class CameraViewModel : ViewModel() {
             audioRoute = audio.currentInputRoute(),
         )
 
+        // Portrait/Landscape here is the STREAM's orientation, not the app
+        // UI's — our controls stay in portrait regardless (see manifest),
+        // this only affects how the encoded video looks to viewers.
+        val targetRotation = when (setupState.orientation) {
+            com.amarjeetmaan.ajlivestudio.ui.setup.StreamOrientation.LANDSCAPE -> android.view.Surface.ROTATION_90
+            com.amarjeetmaan.ajlivestudio.ui.setup.StreamOrientation.PORTRAIT -> android.view.Surface.ROTATION_0
+        }
+
         viewModelScope.launch {
             runCatching {
                 streamEngine.initialize(
@@ -43,7 +51,8 @@ class CameraViewModel : ViewModel() {
                         height = setupState.resolution.height,
                         fps = setupState.frameRate.value,
                         bitrateBps = resolveBitrateBps(setupState.bitrate, setupState.resolution.width),
-                    )
+                    ),
+                    targetRotation = targetRotation,
                 )
             }.onSuccess {
                 uiState = uiState.copy(
@@ -63,13 +72,17 @@ class CameraViewModel : ViewModel() {
         }
     }
 
+    private var activePreviewSurface: Surface? = null
+
     fun startPreview(surface: Surface) {
+        activePreviewSurface = surface
         viewModelScope.launch {
             engine?.startCameraPreview(surface)
         }
     }
 
     fun stopPreview() {
+        activePreviewSurface = null
         viewModelScope.launch {
             engine?.stopCameraPreview()
         }
@@ -100,15 +113,24 @@ class CameraViewModel : ViewModel() {
     fun flip() {
         val streamEngine = engine ?: return
         viewModelScope.launch {
-            val nowFront = streamEngine.flipCamera()
-            uiState = uiState.copy(
-                isFrontCamera = nowFront,
-                isTorchOn = false,
-                isTorchAvailable = streamEngine.isTorchAvailable(),
-                minZoomRatio = streamEngine.zoomRange().start,
-                maxZoomRatio = streamEngine.zoomRange().endInclusive,
-                zoomRatio = streamEngine.zoomRange().start,
-            )
+            runCatching { streamEngine.flipCamera() }
+                .onSuccess { nowFront ->
+                    uiState = uiState.copy(
+                        isFrontCamera = nowFront,
+                        isTorchOn = false,
+                        isTorchAvailable = streamEngine.isTorchAvailable(),
+                        minZoomRatio = streamEngine.zoomRange().start,
+                        maxZoomRatio = streamEngine.zoomRange().endInclusive,
+                        zoomRatio = streamEngine.zoomRange().start,
+                    )
+                    // Flipping swaps the underlying camera source, which can
+                    // drop the previously-bound preview surface — rebind it
+                    // so the live view doesn't go blank after flip.
+                    activePreviewSurface?.let { engine?.startCameraPreview(it) }
+                }
+                .onFailure { e ->
+                    uiState = uiState.copy(errorMessage = "Flip camera failed: ${e.message}")
+                }
         }
     }
 
