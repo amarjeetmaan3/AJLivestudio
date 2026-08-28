@@ -1,5 +1,7 @@
 package com.amarjeetmaan.ajlivestudio.ui.camera
 
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -27,6 +29,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.amarjeetmaan.ajlivestudio.ui.live.RtmpConfig
 import com.amarjeetmaan.ajlivestudio.ui.overlay.OverlayLayer
@@ -45,24 +48,6 @@ import com.amarjeetmaan.ajlivestudio.ui.theme.LiveGreen
 import com.amarjeetmaan.ajlivestudio.ui.theme.NavyDeep
 import kotlin.math.roundToInt
 
-/**
- * Full-screen preview + live control bar.
- *
- * NOTE on the live camera preview widget: StreamPack's own preview View
- * class (io.github.thibaultbee.streampack.views.PreviewView, from the
- * streampack-ui artifact) has failed to resolve at compile time despite
- * being quoted verbatim across StreamPack's own docs/README/Maven pages —
- * a genuine inconsistency I couldn't run to ground through documentation
- * search alone. Rather than keep guessing at class paths and burning more
- * build cycles, the preview widget is a placeholder for now. This does
- * NOT block actual streaming — capture, encode, and RTMP send all happen
- * on the streamer itself, independent of whether a preview View is
- * attached. GO LIVE should work end-to-end; you just won't see a local
- * preview yet. Wiring in the real preview is a focused follow-up once we
- * can confirm the exact class name against your resolved AAR (e.g. by
- * unzipping the streampack-ui-3.2.0.aar from your Gradle cache and
- * listing its classes.jar contents).
- */
 @Composable
 fun CameraPreviewScreen(
     setupState: StudioSetupState,
@@ -93,14 +78,35 @@ fun CameraPreviewScreen(
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
 
-        // Placeholder until the real StreamPack preview View class is confirmed — see note above.
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text(
-                if (uiState.cameraReady) "Camera ready — live preview coming soon" else "Initializing camera…",
-                color = Color.White.copy(alpha = 0.4f),
-                style = MaterialTheme.typography.bodyMedium,
+        // --- Live Camera Preview Surface ---
+        if (uiState.cameraReady) {
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { ctx ->
+                    SurfaceView(ctx).apply {
+                        holder.addCallback(object : SurfaceHolder.Callback {
+                            override fun surfaceCreated(holder: SurfaceHolder) {
+                                viewModel.startPreview(holder.surface)
+                            }
+                            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
+                            override fun surfaceDestroyed(holder: SurfaceHolder) {
+                                viewModel.stopPreview()
+                            }
+                        })
+                    }
+                }
             )
+        } else {
+            // Shows briefly while camera is turning on
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(
+                    "Initializing camera…",
+                    color = Color.White.copy(alpha = 0.4f),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
         }
+        // -----------------------------------
 
         OverlayLayer(
             items = overlayViewModel.items,
@@ -118,35 +124,35 @@ fun CameraPreviewScreen(
                 .align(Alignment.TopCenter)
                 .background(NavyDeep.copy(alpha = 0.55f))
         ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            TextButton(onClick = onBack, enabled = uiState.streamState != StreamState.LIVE) {
-                Text("← Setup", color = Color.White)
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                val (dotColor, label) = when (uiState.streamState) {
-                    StreamState.IDLE -> Color.Gray to "Not live"
-                    StreamState.CONNECTING -> GoldPrimary to "Connecting…"
-                    StreamState.LIVE -> LiveGreen to "LIVE"
-                    StreamState.ERROR -> CrimsonBright to "Error"
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TextButton(onClick = onBack, enabled = uiState.streamState != StreamState.LIVE) {
+                    Text("← Setup", color = Color.White)
                 }
-                Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(dotColor))
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(label, color = Color.White, style = MaterialTheme.typography.labelSmall)
-                Spacer(modifier = Modifier.width(10.dp))
-                Text(
-                    "${setupState.resolution.label} · ${setupState.frameRate.value}fps",
-                    color = Color.White.copy(alpha = 0.7f),
-                    style = MaterialTheme.typography.labelSmall
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    val (dotColor, label) = when (uiState.streamState) {
+                        StreamState.IDLE -> Color.Gray to "Not live"
+                        StreamState.CONNECTING -> GoldPrimary to "Connecting…"
+                        StreamState.LIVE -> LiveGreen to "LIVE"
+                        StreamState.ERROR -> CrimsonBright to "Error"
+                    }
+                    Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(dotColor))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(label, color = Color.White, style = MaterialTheme.typography.labelSmall)
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        "${setupState.resolution.label} · ${setupState.frameRate.value}fps",
+                        color = Color.White.copy(alpha = 0.7f),
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
             }
-        }
-        SceneBar(sceneViewModel = sceneViewModel, overlayViewModel = overlayViewModel)
+            SceneBar(sceneViewModel = sceneViewModel, overlayViewModel = overlayViewModel)
         }
 
         uiState.errorMessage?.let { message ->
