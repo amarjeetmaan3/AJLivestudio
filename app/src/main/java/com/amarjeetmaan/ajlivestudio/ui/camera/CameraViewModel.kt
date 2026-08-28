@@ -1,6 +1,7 @@
 package com.amarjeetmaan.ajlivestudio.ui.camera
 
 import android.content.Context
+import android.view.Surface
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -12,7 +13,6 @@ import com.amarjeetmaan.ajlivestudio.streaming.EngineVideoConfig
 import com.amarjeetmaan.ajlivestudio.streaming.StreamEngine
 import com.amarjeetmaan.ajlivestudio.ui.setup.BitratePreset
 import com.amarjeetmaan.ajlivestudio.ui.setup.StudioSetupState
-import android.view.Surface
 import kotlinx.coroutines.launch
 
 class CameraViewModel : ViewModel() {
@@ -61,17 +61,21 @@ class CameraViewModel : ViewModel() {
             }
         }
     }
-     fun startPreview(surface: Surface) {
-    viewModelScope.launch {
-        streamEngine.startCameraPreview(surface)
-    }
-}
 
-fun stopPreview() {
-    viewModelScope.launch {
-        streamEngine.stopCameraPreview()
+    // --- Preview Controls Updated ---
+    fun startPreview(surface: Surface) {
+        viewModelScope.launch {
+            engine?.startCameraPreview(surface)
+        }
     }
-}
+
+    fun stopPreview() {
+        viewModelScope.launch {
+            engine?.stopCameraPreview()
+        }
+    }
+    // --------------------------------
+
     /** Exposes the underlying streamer so the screen can render SourcePreview(streamer). */
     fun currentStreamer() = engine?.streamer
 
@@ -147,22 +151,10 @@ fun stopPreview() {
         uiState = uiState.copy(isMicMuted = newMuted)
     }
 
-    /**
-     * UI-level gain (0-200%). Note: this does NOT multiply the actual
-     * signal yet — true gain requires hooking StreamPack's audio pipeline
-     * with a custom processor, which isn't wired up in this phase. Stored
-     * here so the control + value persist and are ready for that hook.
-     */
     fun setMicGain(percent: Int) {
         uiState = uiState.copy(micGainPercent = percent.coerceIn(0, 200))
     }
 
-    /**
-     * UI-level music track volume. Same status as mic gain: stored and
-     * ready, but there's no music track actually mixed into the outgoing
-     * audio yet — that needs the same StreamPack audio-pipeline hook
-     * flagged since Phase 4. See README.
-     */
     fun setMusicVolume(percent: Int) {
         uiState = uiState.copy(musicVolumePercent = percent.coerceIn(0, 100))
     }
@@ -179,9 +171,6 @@ fun stopPreview() {
 
     fun onScreenSharePermissionResult(granted: Boolean) {
         uiState = uiState.copy(screenSharePermissionGranted = granted)
-        // screenShareWiredToStream intentionally stays false — see
-        // ScreenShareController's doc comment on why the StreamPack
-        // video-source wiring isn't done yet.
     }
 
     private fun resolveBitrateBps(preset: BitratePreset, widthHint: Int): Int {
@@ -191,12 +180,8 @@ fun stopPreview() {
 
     override fun onCleared() {
         super.onCleared()
-        // Always un-mute the system mic on teardown so a mute here never
-        // leaks into other apps after AJ Live Studio closes.
         audioController?.setMicMuted(false)
         val streamEngine = engine ?: return
-        // Fire-and-forget release; ViewModel scope is already cancelled here,
-        // so use a detached scope for the final cleanup call.
         kotlinx.coroutines.GlobalScope.launch {
             runCatching { streamEngine.release() }
         }
