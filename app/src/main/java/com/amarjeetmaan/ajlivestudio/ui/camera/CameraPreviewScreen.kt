@@ -69,7 +69,6 @@ fun CameraPreviewScreen(
     
     val screenShareController = remember { ScreenShareController(context) }
     
-    // फिक्स: यहाँ हमने result.data (टोकन) को ViewModel में पास कर दिया है
     val screenSharePermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -85,38 +84,35 @@ fun CameraPreviewScreen(
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
 
-        // --- Live Camera Preview Surface ---
-        // TextureView, not SurfaceView: SurfaceView renders on its own
-        // hardware layer that punches through the normal View hierarchy,
-        // so Compose content placed after it (overlays, text) does not
-        // reliably draw on top — a well-known Compose+SurfaceView
-        // limitation. TextureView participates in normal View compositing,
-        // so overlays render correctly above it. StreamPack's startPreview()
-        // accepts either (per its own docs: "SurfaceView, a TextureView, a
-        // Surface...").
+        // --- Live Camera Preview Surface (Stretch Fix Applied) ---
         if (uiState.cameraReady) {
-            AndroidView(
-                modifier = Modifier.fillMaxSize(),
-                factory = { ctx ->
-                    TextureView(ctx).apply {
-                        surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-                            override fun onSurfaceTextureAvailable(
-                                surfaceTexture: SurfaceTexture, width: Int, height: Int
-                            ) {
-                                viewModel.startPreview(Surface(surfaceTexture))
+            // कैमरा स्ट्रेच होने से रोकने के लिए रिज़ॉल्यूशन के हिसाब से Ratio फिक्स करें
+            val isLandscape = setupState.resolution.width > setupState.resolution.height
+            val previewRatio = if (isLandscape) 16f / 9f else 9f / 16f
+
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                AndroidView(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(previewRatio) // <-- यह स्ट्रेचिंग रोकेगा!
+                        .background(Color.Black),
+                    factory = { ctx ->
+                        TextureView(ctx).apply {
+                            surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                                override fun onSurfaceTextureAvailable(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
+                                    viewModel.startPreview(Surface(surfaceTexture))
+                                }
+                                override fun onSurfaceTextureSizeChanged(surfaceTexture: SurfaceTexture, width: Int, height: Int) {}
+                                override fun onSurfaceTextureDestroyed(surfaceTexture: SurfaceTexture): Boolean {
+                                    viewModel.stopPreview()
+                                    return true
+                                }
+                                override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) {}
                             }
-                            override fun onSurfaceTextureSizeChanged(
-                                surfaceTexture: SurfaceTexture, width: Int, height: Int
-                            ) {}
-                            override fun onSurfaceTextureDestroyed(surfaceTexture: SurfaceTexture): Boolean {
-                                viewModel.stopPreview()
-                                return true
-                            }
-                            override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) {}
                         }
                     }
-                }
-            )
+                )
+            }
         } else {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(
@@ -126,7 +122,7 @@ fun CameraPreviewScreen(
                 )
             }
         }
-        // -----------------------------------
+        // --------------------------------------------------------
 
         OverlayLayer(
             items = overlayViewModel.items,
@@ -298,9 +294,15 @@ fun CameraPreviewScreen(
                 )
                 ControlIcon(
                     icon = Icons.Filled.ScreenShare,
-                    label = if (uiState.screenSharePermissionGranted) "Granted" else "Screen",
+                    label = if (uiState.screenSharePermissionGranted) "Screen On" else "Screen",
                     tint = if (uiState.screenSharePermissionGranted) GoldPrimary else Color.White,
-                    onClick = { screenSharePermissionLauncher.launch(screenShareController.createCaptureIntent()) }
+                    onClick = { 
+                        if (uiState.screenSharePermissionGranted) {
+                            // TODO: Add stop sharing logic to UI
+                        } else {
+                            screenSharePermissionLauncher.launch(screenShareController.createCaptureIntent()) 
+                        }
+                    }
                 )
                 ControlIcon(
                     icon = Icons.Filled.Tune,
@@ -309,17 +311,7 @@ fun CameraPreviewScreen(
                 )
             }
 
-            if (uiState.screenSharePermissionGranted && !uiState.screenShareWiredToStream) {
-                Text(
-                    "Screen capture permission granted — not yet wired into the broadcast (see README)",
-                    color = GoldPrimary,
-                    style = MaterialTheme.typography.labelSmall,
-                    modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp, start = 12.dp, end = 12.dp)
-                )
-            }
-
             Spacer(modifier = Modifier.height(6.dp))
-
             Spacer(modifier = Modifier.height(10.dp))
 
             Button(
@@ -344,26 +336,6 @@ fun CameraPreviewScreen(
                         else -> "GO LIVE"
                     },
                     fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
-                )
-            }
-
-            if (!uiState.dualCameraAvailable) {
-                Text(
-                    "Second camera not available on this device",
-                    color = Color.White.copy(alpha = 0.5f),
-                    style = MaterialTheme.typography.labelSmall,
-                    modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp)
-                )
-            } else {
-                Text(
-                    if (uiState.dualCameraConcurrentSupported)
-                        "Simultaneous front+back capture: supported on this device"
-                    else
-                        "Simultaneous front+back capture: not supported on this device (has both cameras, but not concurrently)",
-                    color = if (uiState.dualCameraConcurrentSupported) LiveGreen else Color.White.copy(alpha = 0.5f),
-                    style = MaterialTheme.typography.labelSmall,
-                    modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp, start = 16.dp, end = 16.dp),
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 )
             }
         }
