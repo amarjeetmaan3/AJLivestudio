@@ -1,7 +1,6 @@
 package com.amarjeetmaan.ajlivestudio.ui.camera
 
 import android.content.Context
-import android.content.Intent
 import android.view.Surface
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -119,10 +118,6 @@ class CameraViewModel : ViewModel() {
             it.setMicMuted(newMuted)
             uiState = uiState.copy(isMicMuted = newMuted)
         }
-    }
-
-    fun onScreenSharePermissionResult(granted: Boolean, data: Intent?) {
-        uiState = uiState.copy(screenSharePermissionGranted = granted)
     }
 
     fun setMicGain(percent: Int) { uiState = uiState.copy(micGainPercent = percent.coerceIn(0, 200)) }
