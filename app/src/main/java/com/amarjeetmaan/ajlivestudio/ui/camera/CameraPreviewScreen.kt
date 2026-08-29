@@ -17,9 +17,7 @@ import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
-import androidx.compose.material.icons.filled.ScreenShare
 import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material.icons.filled.WbAuto
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -40,7 +38,6 @@ import com.amarjeetmaan.ajlivestudio.ui.overlay.OverlayLayer
 import com.amarjeetmaan.ajlivestudio.ui.overlay.OverlayPanel
 import com.amarjeetmaan.ajlivestudio.ui.overlay.OverlayViewModel
 import com.amarjeetmaan.ajlivestudio.ui.setup.StudioSetupState
-import com.amarjeetmaan.ajlivestudio.screenshare.ScreenShareController
 import com.amarjeetmaan.ajlivestudio.ui.theme.CrimsonBright
 import com.amarjeetmaan.ajlivestudio.ui.theme.GoldPrimary
 import com.amarjeetmaan.ajlivestudio.ui.theme.LiveGreen
@@ -61,16 +58,6 @@ fun CameraPreviewScreen(
     var showOverlayPanel by remember { mutableStateOf(false) }
     var showAudioMixer by remember { mutableStateOf(false) }
     var showExitDialog by remember { mutableStateOf(false) }
-    
-    val screenShareController = remember { ScreenShareController(context) }
-    val screenSharePermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        viewModel.onScreenSharePermissionResult(
-            granted = screenShareController.isResultGranted(result.resultCode),
-            data = result.data 
-        )
-    }
 
     BackHandler(enabled = uiState.streamState == StreamState.LIVE) {
         showExitDialog = true
