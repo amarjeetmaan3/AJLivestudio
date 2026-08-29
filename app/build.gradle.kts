@@ -9,74 +9,118 @@ android {
 
     defaultConfig {
         applicationId = "com.amarjeetmaan.ajlivestudio"
-        minSdk = 26
+        minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 13
+        versionName = "0.12.1" // StreamPack compile fixes
 
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        vectorDrawables {
-            useSupportLibrary = true
+        vectorDrawables { useSupportLibrary = true }
+    }
+
+    // नया Permanent Keystore ब्लॉक
+    signingConfigs {
+        create("permanentDebug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
         }
     }
 
     buildTypes {
+        // डिबग बिल्ड को नए Keystore से लिंक किया गया
+        getByName("debug") {
+            signingConfig = signingConfigs.getByName("permanentDebug")
+        }
         release {
             isMinifyEnabled = false
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
+
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_1_8
-        targetCompatibility = JavaVersion.VERSION_1_8
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions {
-        jvmTarget = "1.8"
+        jvmTarget = "17"
+        freeCompilerArgs += listOf(
+            "-Xskip-metadata-version-check",
+            "-opt-in=androidx.compose.material3.ExperimentalMaterial3Api"
+        )
     }
+
     buildFeatures {
         compose = true
     }
     composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.10"
+        kotlinCompilerExtensionVersion = "1.5.8"
     }
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+        jniLibs {
+            pickFirsts += "**/*.so"
+        }
+    }
+}
+
+// Some transitive dependencies (Google Play Services, StreamPack) declare
+// loose/dynamic version ranges for androidx.core and androidx.activity that
+// Gradle resolves to whatever is newest on Maven Central at build time —
+// which can require a compileSdk higher than AGP 8.2.0 supports (max 34).
+// Forcing these to known-good, compileSdk-34-safe versions keeps the build
+// reproducible regardless of what's newly published upstream.
+configurations.all {
+    resolutionStrategy {
+        force("androidx.core:core:1.13.1")
+        force("androidx.core:core-ktx:1.13.1")
+        force("androidx.activity:activity:1.9.1")
+        force("androidx.activity:activity-ktx:1.9.1")
+        force("androidx.activity:activity-compose:1.9.1")
+        force("androidx.lifecycle:lifecycle-runtime-compose:2.8.4")
+        force("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.4")
     }
 }
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.12.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
-    implementation("androidx.activity:activity-compose:1.8.2")
-    implementation(platform("androidx.compose:compose-bom:2023.10.01"))
+    val composeBom = enforcedPlatform("androidx.compose:compose-bom:2024.06.00")
+    implementation(composeBom)
+
+    implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.4")
+    implementation("androidx.activity:activity-compose:1.9.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
-    implementation("androidx.compose.material:material-icons-extended:1.5.4")
+    implementation("androidx.compose.material:material-icons-extended")
+    implementation("androidx.navigation:navigation-compose:2.7.7")
 
-    // StreamPack (Version 2.6.1 - GL Mixer is already included in this!)
-    implementation("io.github.thibaultbee:streampack:2.6.1")
+    // Image loading for overlay logos picked via the photo picker
+    implementation("io.coil-kt:coil-compose:2.6.0")
 
-    // Google Sign-In & YouTube API
-    implementation("com.google.android.gms:play-services-auth:21.0.0")
-    implementation("com.google.api-client:google-api-client-android:2.2.0")
-    implementation("com.google.apis:google-api-services-youtube:v3-rev20230816-2.0.0")
+    // YouTube Direct API (Phase 11) — Google Sign-In + raw REST calls to
+    // YouTube Data API v3 (no heavy google-api-client dependency needed).
+    implementation("com.google.android.gms:play-services-auth:21.2.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("org.json:json:20240303")
 
-    // ViewModel & Coroutines
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+    // StreamPack — capture, encode, mux and send (RTMP) in one pipeline.
+    // Version 3.2.0 confirmed against official KDoc (thibaultbee.github.io/StreamPack) —
+    // setConfig()/startStream(descriptor) do not exist in 3.1.2, only 3.2.0+.
+    val streamPackVersion = "3.2.0"
+    implementation("io.github.thibaultbee.streampack:streampack-core:$streamPackVersion")
+    implementation("io.github.thibaultbee.streampack:streampack-ui:$streamPackVersion")
+    implementation("io.github.thibaultbee.streampack:streampack-rtmp:$streamPackVersion")
+    
+    // NEW: GL Extension for Overlays (Mixer)
+    implementation("io.github.thibaultbee.streampack:streampack-extension-gl:$streamPackVersion")
 
-    testImplementation("junit:junit:4.13.2")
-    androidTestImplementation("androidx.test.ext:junit:1.1.5")
-    androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
-    androidTestImplementation(platform("androidx.compose:compose-bom:2023.10.01"))
-    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     debugImplementation("androidx.compose.ui:ui-tooling")
-    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
