@@ -1,5 +1,7 @@
 package com.amarjeetmaan.ajlivestudio.ui.camera
 
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -25,6 +27,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.amarjeetmaan.ajlivestudio.ui.live.RtmpConfig
 import com.amarjeetmaan.ajlivestudio.ui.overlay.OverlayLayer
@@ -58,14 +61,23 @@ fun CameraPreviewScreen(
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
 
-        // Preview Holder
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text(
-                if (uiState.cameraReady) "Camera ready — check stream for live output" else "Initializing camera…",
-                color = Color.White.copy(alpha = 0.4f),
-                style = MaterialTheme.typography.bodyMedium,
-            )
-        }
+        // Actual Camera Preview Surface (This forces the camera sensor to turn on)
+        AndroidView(
+            factory = { ctx ->
+                SurfaceView(ctx).apply {
+                    holder.addCallback(object : SurfaceHolder.Callback {
+                        override fun surfaceCreated(holder: SurfaceHolder) {
+                            viewModel.startPreview(holder.surface)
+                        }
+                        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
+                        override fun surfaceDestroyed(holder: SurfaceHolder) {
+                            viewModel.stopPreview()
+                        }
+                    })
+                }
+            },
+            modifier = Modifier.fillMaxSize()
+        )
 
         // Overlays System
         OverlayLayer(
