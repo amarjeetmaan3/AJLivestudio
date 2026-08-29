@@ -3,13 +3,14 @@ package com.amarjeetmaan.ajlivestudio.streaming
 import android.content.Context
 import android.content.Intent
 import android.media.AudioFormat
+import android.media.projection.MediaProjection
 import android.util.Size
 import io.github.thibaultbee.streampack.core.interfaces.startStream
 import io.github.thibaultbee.streampack.core.streamers.single.AudioConfig
 import io.github.thibaultbee.streampack.core.streamers.single.SingleStreamer
 import io.github.thibaultbee.streampack.core.streamers.single.VideoConfig
 import io.github.thibaultbee.streampack.core.streamers.single.setConfig
-import io.github.thibaultbee.streampack.streamers.ScreenStreamer
+import io.github.thibaultbee.streampack.core.streamers.single.videoMediaProjectionSingleStreamer
 import com.amarjeetmaan.ajlivestudio.screenshare.ScreenShareService
 
 class StreamEngine(private val context: Context) {
@@ -32,15 +33,32 @@ class StreamEngine(private val context: Context) {
         )
     }
 
-    suspend fun goLive(rtmpUrl: String, mediaProjectionIntent: Intent) {
-        // Start foreground service for Screen Capture
-        val serviceIntent = Intent(context, ScreenShareService::class.java)
-        context.startForegroundService(serviceIntent)
-        
-        // Using the correct ScreenStreamer class for StreamPack 3.2.0
-        val newStreamer = ScreenStreamer(context, mediaProjectionIntent)
+    /**
+     * Streams by screen-recording the app's own UI (camera preview + the
+     * Compose overlay layer, exactly as displayed) via StreamPack's
+     * MediaProjection video source. This is why the camera preview MUST
+     * render through a TextureView-backed surface (PreviewView in
+     * COMPATIBLE mode) — SurfaceView content is invisible to screen
+     * capture and would show up as black to the viewer.
+     *
+     * mediaProjection must come from ScreenShareController.getMediaProjection(),
+     * called AFTER ScreenShareService (foreground service, type
+     * "mediaProjection") is already running — that ordering is an Android
+     * 14+ platform requirement.
+     *
+     * Built against StreamPack 3.2.0's confirmed Dokka API
+     * (videoMediaProjectionSingleStreamer, in
+     * io.github.thibaultbee.streampack.core.streamers.single) — not guessed.
+     */
+    suspend fun goLive(rtmpUrl: String, mediaProjection: MediaProjection) {
+        context.startForegroundService(Intent(context, ScreenShareService::class.java))
+
+        val newStreamer = videoMediaProjectionSingleStreamer(
+            context = context,
+            mediaProjection = mediaProjection
+        )
         audioConfig?.let { a -> videoConfig?.let { v -> newStreamer.setConfig(a, v) } }
-        
+
         streamer = newStreamer
         streamer?.startStream(rtmpUrl)
     }
