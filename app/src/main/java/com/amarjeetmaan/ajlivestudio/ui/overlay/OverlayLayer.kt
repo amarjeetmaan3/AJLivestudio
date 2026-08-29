@@ -4,12 +4,13 @@ import android.net.Uri
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
@@ -24,26 +25,33 @@ fun OverlayLayer(
     items: List<OverlayItem>,
     editable: Boolean,
     webReloadTick: Int,
-    onDrag: (String, Float, Float) -> Unit
+    onTransform: (String, Float, Float, Float) -> Unit
 ) {
     Box(modifier = Modifier.fillMaxSize()) {
         items.forEach { item ->
             var offsetX by remember { mutableFloatStateOf(item.x) }
             var offsetY by remember { mutableFloatStateOf(item.y) }
+            var scale by remember { mutableFloatStateOf(item.scale) }
 
             Box(
                 modifier = Modifier
                     .offset { IntOffset(offsetX.roundToInt(), offsetY.roundToInt()) }
+                    .graphicsLayer(
+                        scaleX = scale,
+                        scaleY = scale
+                    )
                     .pointerInput(Unit) {
                         if (editable) {
-                            detectDragGestures(
-                                onDragEnd = { onDrag(item.id, offsetX, offsetY) },
-                                onDrag = { change, dragAmount ->
-                                    change.consume()
-                                    offsetX += dragAmount.x
-                                    offsetY += dragAmount.y
-                                }
-                            )
+                            // यह ड्रैग (Move) और ज़ूम (Resize) दोनों को एक साथ संभालेगा
+                            detectTransformGestures { _, pan, zoom, _ ->
+                                scale *= zoom
+                                scale = scale.coerceIn(0.3f, 5f) // बहुत छोटा या बहुत बड़ा होने से रोकेगा
+                                
+                                offsetX += pan.x
+                                offsetY += pan.y
+                                
+                                onTransform(item.id, offsetX, offsetY, scale)
+                            }
                         }
                     }
             ) {
