@@ -72,7 +72,6 @@ fun CameraPreviewScreen(
             items = overlayViewModel.items,
             editable = true,
             webReloadTick = overlayViewModel.webReloadTick,
-            // Fixed: Removed missing 'updatePosition' call to clear the build error
             onTransform = { _, _, _, _ -> }
         )
 
@@ -205,7 +204,7 @@ fun CameraPreviewScreen(
                     icon = if (uiState.isMicMuted) Icons.Filled.MicOff else Icons.Filled.Mic,
                     label = if (uiState.isMicMuted) "Muted" else "Mic",
                     tint = if (uiState.isMicMuted) CrimsonBright else Color.White,
-                    onClick = { viewModel.toggleMic() }
+                    onClick = { viewModel.toggleMic(context) }
                 )
                 ControlIcon(
                     icon = Icons.Filled.Layers,
@@ -224,10 +223,9 @@ fun CameraPreviewScreen(
             Button(
                 onClick = {
                     if (uiState.streamState == StreamState.LIVE) {
-                        viewModel.stopLive()
+                        viewModel.stopLive(context)
                     } else {
-                        // Fixed: Provided missing 'context' parameter for goLive
-                        viewModel.goLive(context, rtmpConfig.fullUrl())
+                        viewModel.goLive(rtmpConfig.fullUrl())
                     }
                 },
                 enabled = uiState.cameraReady && uiState.streamState != StreamState.CONNECTING,
@@ -250,9 +248,7 @@ fun CameraPreviewScreen(
     }
 
     if (showOverlayPanel) {
-        // Fixed: Provided missing 'context' parameter to OverlayPanel
         OverlayPanel(
-            context = context,
             viewModel = overlayViewModel,
             onDismiss = { showOverlayPanel = false }
         )
