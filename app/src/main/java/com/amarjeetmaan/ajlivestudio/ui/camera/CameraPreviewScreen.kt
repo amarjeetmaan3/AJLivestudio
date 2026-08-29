@@ -47,8 +47,17 @@ fun CameraPreviewScreen(
     var showAudioMixer by remember { mutableStateOf(false) }
     var showExitDialog by remember { mutableStateOf(false) }
     
-    // CameraX Preview View
-    val previewView = remember { PreviewView(context).apply { scaleType = PreviewView.ScaleType.FILL_CENTER } }
+    // CameraX Preview View.
+    // IMPORTANT: must be COMPATIBLE (TextureView-backed), not the default
+    // PERFORMANCE mode (SurfaceView-backed) — SurfaceView content is
+    // invisible to MediaProjection screen capture and shows up as black
+    // to the viewer, since we broadcast by screen-recording this UI.
+    val previewView = remember {
+        PreviewView(context).apply {
+            scaleType = PreviewView.ScaleType.FILL_CENTER
+            implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+        }
+    }
 
     val screenShareController = remember { ScreenShareController(context) }
     val screenSharePermissionLauncher = rememberLauncherForActivityResult(
@@ -56,7 +65,8 @@ fun CameraPreviewScreen(
     ) { result ->
         if (screenShareController.isResultGranted(result.resultCode) && result.data != null) {
             // Permission Granted -> START LIVE STREAM!
-            viewModel.goLive(rtmpConfig.fullUrl(), result.data!!)
+            val mediaProjection = screenShareController.getMediaProjection(result.resultCode, result.data!!)
+            viewModel.goLive(rtmpConfig.fullUrl(), mediaProjection)
         }
     }
 
