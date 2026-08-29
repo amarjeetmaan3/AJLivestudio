@@ -36,6 +36,61 @@ fun OverlayLayer(
             Box(
                 modifier = Modifier
                     .offset { IntOffset(offsetX.roundToInt(), offsetY.roundToInt()) }
+                    .graphicsLayer(scaleX = scale, scaleY = scale)
+                    .pointerInput(Unit) {
+                        if (editable) {
+                            detectTransformGestures { _, pan, zoom, _ ->
+                                scale = (scale * zoom).coerceIn(0.3f, 5f)
+                                offsetX += pan.x
+                                offsetY += pan.y
+                                onTransform(item.id, offsetX, offsetY, scale)
+                            }
+                        }
+                    }
+            ) {
+                when (item.type) {
+                    OverlayType.TEXT -> {
+                        Text(
+                            text = item.content,
+                            color = Color.White,
+                            fontSize = 22.sp,
+                            modifier = Modifier.background(Color.Black.copy(alpha = 0.5f)).padding(12.dp)
+                        )
+                    }
+                    OverlayType.LOGO -> {
+                        AsyncImage(
+                            model = Uri.parse(item.content),
+                            contentDescription = "Logo",
+                            modifier = Modifier.size(100.dp)
+                        )
+                    }
+                    OverlayType.LOWER_THIRD -> {
+                        val parts = item.content.split("||")
+                        Column(modifier = Modifier.background(Color.Blue.copy(alpha = 0.8f)).padding(12.dp)) {
+                            Text(text = parts.getOrNull(0) ?: "", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                            Text(text = parts.getOrNull(1) ?: "", color = Color.Yellow, fontSize = 16.sp)
+                        }
+                    }
+                    OverlayType.WEB -> {
+                        AndroidView(
+                            factory = { ctx ->
+                                WebView(ctx).apply {
+                                    webViewClient = WebViewClient()
+                                    settings.javaScriptEnabled = true
+                                    setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                                    loadUrl(item.content)
+                                }
+                            },
+                            update = { webView -> if (webReloadTick > 0) webView.reload() },
+                            modifier = Modifier.width(300.dp).height(200.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}                modifier = Modifier
+                    .offset { IntOffset(offsetX.roundToInt(), offsetY.roundToInt()) }
                     .graphicsLayer(
                         scaleX = scale,
                         scaleY = scale
