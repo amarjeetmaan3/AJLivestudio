@@ -1,8 +1,5 @@
 package com.amarjeetmaan.ajlivestudio.ui.camera
 
-import android.app.Activity
-import android.content.pm.ActivityInfo
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -12,12 +9,14 @@ import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.Layers
+import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
+import androidx.compose.material.icons.filled.ScreenShare
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.WbAuto
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -26,21 +25,25 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.amarjeetmaan.ajlivestudio.ui.live.RtmpConfig
 import com.amarjeetmaan.ajlivestudio.ui.overlay.OverlayLayer
 import com.amarjeetmaan.ajlivestudio.ui.overlay.OverlayPanel
 import com.amarjeetmaan.ajlivestudio.ui.overlay.OverlayViewModel
+import com.amarjeetmaan.ajlivestudio.ui.scene.SceneBar
+import com.amarjeetmaan.ajlivestudio.ui.scene.SceneViewModel
 import com.amarjeetmaan.ajlivestudio.ui.setup.StudioSetupState
+import com.amarjeetmaan.ajlivestudio.screenshare.ScreenShareController
+import com.amarjeetmaan.ajlivestudio.ui.layout.LayoutPickerMenu
+import com.amarjeetmaan.ajlivestudio.ui.layout.LayoutViewModel
+import com.amarjeetmaan.ajlivestudio.ui.layout.LayoutZonesOverlay
 import com.amarjeetmaan.ajlivestudio.ui.theme.CrimsonBright
 import com.amarjeetmaan.ajlivestudio.ui.theme.GoldPrimary
 import com.amarjeetmaan.ajlivestudio.ui.theme.LiveGreen
 import com.amarjeetmaan.ajlivestudio.ui.theme.NavyDeep
+import kotlin.math.roundToInt
 
 @Composable
 fun CameraPreviewScreen(
@@ -49,139 +52,329 @@ fun CameraPreviewScreen(
     onBack: () -> Unit,
     viewModel: CameraViewModel = viewModel(),
     overlayViewModel: OverlayViewModel = viewModel(),
+    sceneViewModel: SceneViewModel = viewModel(),
+    layoutViewModel: LayoutViewModel = viewModel(),
 ) {
     val context = LocalContext.current
     val uiState = viewModel.uiState
 
+    var showWbMenu by remember { mutableStateOf(false) }
     var showOverlayPanel by remember { mutableStateOf(false) }
-    var showExitDialog by remember { mutableStateOf(false) }
-    var overlayContainerSize by remember { mutableStateOf(IntSize.Zero) }
-
-    BackHandler(enabled = uiState.streamState == StreamState.LIVE) { showExitDialog = true }
-
-    if (showExitDialog) {
-        AlertDialog(
-            onDismissRequest = { showExitDialog = false },
-            title = { Text("Stop Live Stream?", color = Color.Black) },
-            text = { Text("Are you sure you want to end the current live broadcast?", color = Color.DarkGray) },
-            confirmButton = {
-                TextButton(onClick = { showExitDialog = false; viewModel.stopLive(context); onBack() }) {
-                    Text("End Stream", color = CrimsonBright, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
-                }
-            },
-            dismissButton = { TextButton(onClick = { showExitDialog = false }) { Text("Cancel", color = Color.Gray) } },
-            containerColor = Color.White
+    var showLayoutMenu by remember { mutableStateOf(false) }
+    var showAudioMixer by remember { mutableStateOf(false) }
+    
+    val screenShareController = remember { ScreenShareController(context) }
+    
+    // फिक्स: यहाँ हमने result.data (टोकन) को ViewModel में पास कर दिया है
+    val screenSharePermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        viewModel.onScreenSharePermissionResult(
+            granted = screenShareController.isResultGranted(result.resultCode),
+            data = result.data 
         )
     }
 
-    val isLandscape = setupState.orientation == com.amarjeetmaan.ajlivestudio.ui.setup.StreamOrientation.LANDSCAPE
-
-    DisposableEffect(isLandscape) {
-        val activity = context as? Activity
-        activity?.requestedOrientation = if (isLandscape) ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT
-        onDispose { activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED }
-    }
-
-    LaunchedEffect(Unit) {
+    androidx.compose.runtime.LaunchedEffect(Unit) {
         viewModel.initialize(context, setupState)
     }
 
-    // Re-bake the overlay into the actual video stream whenever an item
-    // changes, or the on-screen box is (re)measured. This is what makes
-    // logo/text/lower-third reach YouTube, not just the Studio screen.
-    LaunchedEffect(overlayViewModel.items.toList(), overlayContainerSize) {
-        viewModel.updateOverlayBitmap(
-            context = context,
-            items = overlayViewModel.items,
-            containerWidthPx = overlayContainerSize.width,
-            containerHeightPx = overlayContainerSize.height
-        )
-    }
+    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black)
-            .onSizeChanged { overlayContainerSize = it }
-    ) {
-        if (uiState.cameraReady) {
-            val previewRatio = if (isLandscape) 16f / 9f else 9f / 16f
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Box(modifier = Modifier.fillMaxWidth().aspectRatio(previewRatio).background(Color.Black)) {
-                    AndroidView(
-                        modifier = Modifier.fillMaxSize(),
-                        factory = { ctx ->
-                            android.view.SurfaceView(ctx).apply {
-                                holder.addCallback(object : android.view.SurfaceHolder.Callback {
-                                    override fun surfaceCreated(holder: android.view.SurfaceHolder) { viewModel.startPreview(holder.surface) }
-                                    override fun surfaceChanged(holder: android.view.SurfaceHolder, format: Int, w: Int, h: Int) {}
-                                    override fun surfaceDestroyed(holder: android.view.SurfaceHolder) { viewModel.stopPreview() }
-                                })
-                            }
-                        }
-                    )
-                }
-            }
+        // --- Live Camera Preview Surface ---
+        // IMPORTANT: attaching any preview Surface here (tried both
+        // SurfaceView and TextureView) appears to redirect the camera
+        // source's frames to the preview INSTEAD OF the encoder — actual
+        // reported behavior: with no preview attached, video reached
+        // YouTube successfully; as soon as a preview Surface was attached,
+        // YouTube stopped receiving any video at all, while the local
+        // preview worked. This strongly suggests StreamPack (at least in
+        // this configuration) only supports ONE active output surface at a
+        // time from the camera source, and starting a preview steals it
+        // from the encoder rather than adding a second simultaneous output.
+        // Reverting to the placeholder until simultaneous preview+encode is
+        // specifically confirmed possible — reliable streaming matters more
+        // than a local preview.
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text(
+                if (uiState.cameraReady) "Camera ready — live preview coming soon" else "Initializing camera…",
+                color = Color.White.copy(alpha = 0.4f),
+                style = MaterialTheme.typography.bodyMedium,
+            )
         }
+        // -----------------------------------
 
-        // Studio editor overlay (drag/zoom). The exact same item state is
-        // baked into the encoded video by OverlayRenderer/OverlayCompositor
-        // above — this is the editing view, not a second, disconnected path.
         OverlayLayer(
             items = overlayViewModel.items,
             editable = true,
             webReloadTick = overlayViewModel.webReloadTick,
-            onTransform = { id, x, y, scale -> overlayViewModel.updateTransform(id, x, y, scale) }
+            onDrag = { id, x, y -> overlayViewModel.updatePosition(id, x, y) }
         )
 
-        Column(modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter).background(NavyDeep.copy(alpha = 0.55f))) {
-            Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = onBack, enabled = uiState.streamState != StreamState.LIVE) { Text("← Setup", color = Color.White) }
+        LayoutZonesOverlay(preset = layoutViewModel.preset)
+
+        // Top bar
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .align(Alignment.TopCenter)
+                .background(NavyDeep.copy(alpha = 0.55f))
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TextButton(onClick = onBack, enabled = uiState.streamState != StreamState.LIVE) {
+                    Text("← Setup", color = Color.White)
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    val dotColor = if (uiState.streamState == StreamState.LIVE) LiveGreen else Color.Gray
+                    val (dotColor, label) = when (uiState.streamState) {
+                        StreamState.IDLE -> Color.Gray to "Not live"
+                        StreamState.CONNECTING -> GoldPrimary to "Connecting…"
+                        StreamState.LIVE -> LiveGreen to "LIVE"
+                        StreamState.ERROR -> CrimsonBright to "Error"
+                    }
                     Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(dotColor))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text(if (uiState.streamState == StreamState.LIVE) "LIVE" else "READY", color = Color.White, style = MaterialTheme.typography.labelSmall)
+                    Text(label, color = Color.White, style = MaterialTheme.typography.labelSmall)
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        "${setupState.resolution.label} · ${setupState.frameRate.value}fps",
+                        color = Color.White.copy(alpha = 0.7f),
+                        style = MaterialTheme.typography.labelSmall
+                    )
                 }
             }
+            SceneBar(sceneViewModel = sceneViewModel, overlayViewModel = overlayViewModel)
         }
 
-        Column(modifier = Modifier.fillMaxWidth().align(Alignment.BottomCenter).background(NavyDeep.copy(alpha = 0.8f)).padding(bottom = 16.dp, top = 10.dp)) {
-            Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-                ControlIcon(icon = Icons.Filled.Cameraswitch, label = "Flip", enabled = true, onClick = { viewModel.flip() })
-                ControlIcon(icon = if (uiState.isTorchOn) Icons.Filled.FlashOn else Icons.Filled.FlashOff, label = "Torch", tint = if (uiState.isTorchOn) GoldPrimary else Color.White, enabled = uiState.isTorchAvailable, onClick = { viewModel.toggleTorch() })
-                ControlIcon(icon = if (uiState.isMicMuted) Icons.Filled.MicOff else Icons.Filled.Mic, label = "Mic", tint = if (uiState.isMicMuted) CrimsonBright else Color.White, onClick = { viewModel.toggleMic(context) })
-                ControlIcon(icon = Icons.Filled.Layers, label = "Overlays", onClick = { showOverlayPanel = true })
+        uiState.errorMessage?.let { message ->
+            Text(
+                text = message,
+                color = Color.White,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 60.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(CrimsonBright.copy(alpha = 0.85f))
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
+            )
+        }
+
+        // Bottom control bar
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .align(Alignment.BottomCenter)
+                .background(NavyDeep.copy(alpha = 0.8f))
+                .padding(bottom = 16.dp, top = 10.dp)
+        ) {
+            // Exposure slider
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("EV", color = Color.White, style = MaterialTheme.typography.labelSmall)
+                Slider(
+                    value = uiState.exposureIndex.toFloat(),
+                    onValueChange = { viewModel.setExposure(it.roundToInt()) },
+                    valueRange = uiState.exposureMin.toFloat()..(if (uiState.exposureMax > uiState.exposureMin) uiState.exposureMax.toFloat() else uiState.exposureMin.toFloat() + 1f),
+                    colors = SliderDefaults.colors(thumbColor = GoldPrimary, activeTrackColor = GoldPrimary),
+                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
+                )
+                Text("${uiState.exposureIndex}", color = Color.White, style = MaterialTheme.typography.labelSmall)
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            // Zoom slider
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Zoom", color = Color.White, style = MaterialTheme.typography.labelSmall)
+                Slider(
+                    value = uiState.zoomRatio,
+                    onValueChange = { viewModel.setZoom(it) },
+                    valueRange = uiState.minZoomRatio..(if (uiState.maxZoomRatio > uiState.minZoomRatio) uiState.maxZoomRatio else uiState.minZoomRatio + 1f),
+                    colors = SliderDefaults.colors(thumbColor = GoldPrimary, activeTrackColor = GoldPrimary),
+                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // Row 1: camera-related controls
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ControlIcon(
+                    icon = Icons.Filled.Cameraswitch,
+                    label = "Flip",
+                    enabled = uiState.streamState != StreamState.LIVE,
+                    onClick = { viewModel.flip() }
+                )
+                ControlIcon(
+                    icon = if (uiState.isTorchOn) Icons.Filled.FlashOn else Icons.Filled.FlashOff,
+                    label = "Torch",
+                    tint = if (uiState.isTorchOn) GoldPrimary else Color.White,
+                    enabled = uiState.isTorchAvailable,
+                    onClick = { viewModel.toggleTorch() }
+                )
+                Box {
+                    ControlIcon(
+                        icon = Icons.Filled.WbAuto,
+                        label = uiState.whiteBalance.label,
+                        onClick = { showWbMenu = true }
+                    )
+                    DropdownMenu(expanded = showWbMenu, onDismissRequest = { showWbMenu = false }) {
+                        WhiteBalancePreset.entries.forEach { preset ->
+                            DropdownMenuItem(
+                                text = { Text(preset.label) },
+                                onClick = { viewModel.setWhiteBalance(preset); showWbMenu = false }
+                            )
+                        }
+                    }
+                }
+                Box {
+                    ControlIcon(
+                        icon = Icons.Filled.GridView,
+                        label = "Layout",
+                        onClick = { showLayoutMenu = true }
+                    )
+                    LayoutPickerMenu(
+                        expanded = showLayoutMenu,
+                        onDismiss = { showLayoutMenu = false },
+                        onSelect = { layoutViewModel.selectPreset(it) }
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // Row 2: production controls (audio, overlays, screen)
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ControlIcon(
+                    icon = if (uiState.isMicMuted) Icons.Filled.MicOff else Icons.Filled.Mic,
+                    label = if (uiState.isMicMuted) "Muted" else "Mic",
+                    tint = if (uiState.isMicMuted) CrimsonBright else Color.White,
+                    onClick = { viewModel.toggleMic() }
+                )
+                ControlIcon(
+                    icon = Icons.Filled.Layers,
+                    label = "Overlays",
+                    onClick = { showOverlayPanel = true }
+                )
+                ControlIcon(
+                    icon = Icons.Filled.ScreenShare,
+                    label = if (uiState.screenSharePermissionGranted) "Granted" else "Screen",
+                    tint = if (uiState.screenSharePermissionGranted) GoldPrimary else Color.White,
+                    onClick = { screenSharePermissionLauncher.launch(screenShareController.createCaptureIntent()) }
+                )
+                ControlIcon(
+                    icon = Icons.Filled.Tune,
+                    label = "Audio mixer",
+                    onClick = { showAudioMixer = true }
+                )
+            }
+
+            if (uiState.screenSharePermissionGranted && !uiState.screenShareWiredToStream) {
+                Text(
+                    "Screen capture permission granted — not yet wired into the broadcast (see README)",
+                    color = GoldPrimary,
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp, start = 12.dp, end = 12.dp)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            Spacer(modifier = Modifier.height(10.dp))
 
             Button(
                 onClick = {
                     if (uiState.streamState == StreamState.LIVE) {
-                        showExitDialog = true
+                        viewModel.stopLive()
                     } else {
-                        // Direct camera -> RTMP. No popup, no MediaProjection.
                         viewModel.goLive(rtmpConfig.fullUrl())
                     }
                 },
                 enabled = uiState.cameraReady && uiState.streamState != StreamState.CONNECTING,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).height(52.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = if (uiState.streamState == StreamState.LIVE) CrimsonBright else GoldPrimary),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (uiState.streamState == StreamState.LIVE) CrimsonBright else GoldPrimary
+                ),
                 shape = RoundedCornerShape(12.dp)
             ) {
-                Text(if (uiState.streamState == StreamState.LIVE) "STOP LIVE" else "GO LIVE", fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                Text(
+                    when (uiState.streamState) {
+                        StreamState.LIVE -> "STOP LIVE"
+                        StreamState.CONNECTING -> "CONNECTING…"
+                        else -> "GO LIVE"
+                    },
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                )
+            }
+
+            if (!uiState.dualCameraAvailable) {
+                Text(
+                    "Second camera not available on this device",
+                    color = Color.White.copy(alpha = 0.5f),
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp)
+                )
+            } else {
+                Text(
+                    if (uiState.dualCameraConcurrentSupported)
+                        "Simultaneous front+back capture: supported on this device"
+                    else
+                        "Simultaneous front+back capture: not supported on this device (has both cameras, but not concurrently)",
+                    color = if (uiState.dualCameraConcurrentSupported) LiveGreen else Color.White.copy(alpha = 0.5f),
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp, start = 16.dp, end = 16.dp),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                )
             }
         }
     }
 
-    if (showOverlayPanel) OverlayPanel(viewModel = overlayViewModel, onDismiss = { showOverlayPanel = false })
+    if (showOverlayPanel) {
+        OverlayPanel(
+            viewModel = overlayViewModel,
+            onDismiss = { showOverlayPanel = false }
+        )
+    }
+
+    if (showAudioMixer) {
+        AudioMixerSheet(
+            uiState = uiState,
+            onGainChange = { viewModel.setMicGain(it) },
+            onMusicVolumeChange = { viewModel.setMusicVolume(it) },
+            onConnectBluetooth = { viewModel.connectBluetoothMic() },
+            onDismiss = { showAudioMixer = false }
+        )
+    }
 }
 
 @Composable
-private fun ControlIcon(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, tint: Color = Color.White, enabled: Boolean = true, onClick: () -> Unit) {
+private fun ControlIcon(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    tint: Color = Color.White,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        IconButton(onClick = onClick, enabled = enabled) { Icon(icon, contentDescription = label, tint = if (enabled) tint else Color.Gray) }
+        IconButton(onClick = onClick, enabled = enabled) {
+            Icon(icon, contentDescription = label, tint = if (enabled) tint else Color.Gray)
+        }
         Text(label, color = if (enabled) Color.White else Color.Gray, style = MaterialTheme.typography.labelSmall)
     }
 }
