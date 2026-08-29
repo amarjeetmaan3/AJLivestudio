@@ -120,7 +120,7 @@ dependencies {
     implementation("io.github.thibaultbee.streampack:streampack-rtmp:$streamPackVersion")
     
     // NEW: GL Extension for Overlays (Mixer)
-    implementation("io.github.thibaultbee.streampack:streampack-extension-gl:$streamPackVersion")
+   
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
