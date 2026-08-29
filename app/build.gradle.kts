@@ -60,9 +60,9 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended:1.5.4")
 
-    // StreamPack (Core + OpenGL Extension for Overlays)
-    implementation("io.github.thibaultbee:streampack:3.2.0")
-    implementation("io.github.thibaultbee:streampack-extension-gl:3.2.0")
+  // StreamPack (Core + OpenGL Extension for Overlays)
+    implementation("io.github.thibaultbee:streampack:2.9.+")
+    implementation("io.github.thibaultbee:streampack-extension-gl:2.9.+")
 
     // Google Sign-In & YouTube API
     implementation("com.google.android.gms:play-services-auth:21.0.0")
