@@ -12,12 +12,11 @@ android {
         minSdk = 24
         targetSdk = 34
         versionCode = 13
-        versionName = "0.12.1" // StreamPack compile fixes
+        versionName = "0.12.1"
 
         vectorDrawables { useSupportLibrary = true }
     }
 
-    // नया Permanent Keystore ब्लॉक
     signingConfigs {
         create("permanentDebug") {
             storeFile = file("debug.keystore")
@@ -28,10 +27,7 @@ android {
     }
 
     buildTypes {
-        // डिबग बिल्ड को नए Keystore से लिंक किया गया
-        getByName("debug") {
-            signingConfig = signingConfigs.getByName("permanentDebug")
-        }
+        getByName("debug") { signingConfig = signingConfigs.getByName("permanentDebug") }
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
@@ -44,35 +40,16 @@ android {
     }
     kotlinOptions {
         jvmTarget = "17"
-        freeCompilerArgs += listOf(
-            "-Xskip-metadata-version-check",
-            "-opt-in=androidx.compose.material3.ExperimentalMaterial3Api"
-        )
+        freeCompilerArgs += listOf("-Xskip-metadata-version-check", "-opt-in=androidx.compose.material3.ExperimentalMaterial3Api")
     }
-
-    buildFeatures {
-        compose = true
-    }
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.8"
-    }
-
+    buildFeatures { compose = true }
+    composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
     packaging {
-        resources {
-            excludes += "/META-INF/{AL2.0,LGPL2.1}"
-        }
-        jniLibs {
-            pickFirsts += "**/*.so"
-        }
+        resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+        jniLibs { pickFirsts += "**/*.so" }
     }
 }
 
-// Some transitive dependencies (Google Play Services, StreamPack) declare
-// loose/dynamic version ranges for androidx.core and androidx.activity that
-// Gradle resolves to whatever is newest on Maven Central at build time —
-// which can require a compileSdk higher than AGP 8.2.0 supports (max 34).
-// Forcing these to known-good, compileSdk-34-safe versions keeps the build
-// reproducible regardless of what's newly published upstream.
 configurations.all {
     resolutionStrategy {
         force("androidx.core:core:1.13.1")
@@ -101,26 +78,23 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.navigation:navigation-compose:2.7.7")
-
-    // Image loading for overlay logos picked via the photo picker
     implementation("io.coil-kt:coil-compose:2.6.0")
 
-    // YouTube Direct API (Phase 11) — Google Sign-In + raw REST calls to
-    // YouTube Data API v3 (no heavy google-api-client dependency needed).
     implementation("com.google.android.gms:play-services-auth:21.2.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.json:json:20240303")
 
-    // StreamPack — capture, encode, mux and send (RTMP) in one pipeline.
-    // Version 3.2.0 confirmed against official KDoc (thibaultbee.github.io/StreamPack) —
-    // setConfig()/startStream(descriptor) do not exist in 3.1.2, only 3.2.0+.
     val streamPackVersion = "3.2.0"
     implementation("io.github.thibaultbee.streampack:streampack-core:$streamPackVersion")
     implementation("io.github.thibaultbee.streampack:streampack-ui:$streamPackVersion")
     implementation("io.github.thibaultbee.streampack:streampack-rtmp:$streamPackVersion")
-    
-    // NEW: GL Extension for Overlays (Mixer)
-   
+
+    // NEW: Android CameraX (For showing camera behind overlays)
+    val cameraxVersion = "1.3.2"
+    implementation("androidx.camera:camera-core:$cameraxVersion")
+    implementation("androidx.camera:camera-camera2:$cameraxVersion")
+    implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
+    implementation("androidx.camera:camera-view:$cameraxVersion")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
