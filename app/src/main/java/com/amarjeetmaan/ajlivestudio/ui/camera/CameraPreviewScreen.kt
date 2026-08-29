@@ -9,10 +9,8 @@ import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.Layers
-import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
-import androidx.compose.material.icons.filled.ScreenShare
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.WbAuto
 import androidx.compose.material3.*
@@ -32,13 +30,7 @@ import com.amarjeetmaan.ajlivestudio.ui.live.RtmpConfig
 import com.amarjeetmaan.ajlivestudio.ui.overlay.OverlayLayer
 import com.amarjeetmaan.ajlivestudio.ui.overlay.OverlayPanel
 import com.amarjeetmaan.ajlivestudio.ui.overlay.OverlayViewModel
-import com.amarjeetmaan.ajlivestudio.ui.scene.SceneBar
-import com.amarjeetmaan.ajlivestudio.ui.scene.SceneViewModel
 import com.amarjeetmaan.ajlivestudio.ui.setup.StudioSetupState
-import com.amarjeetmaan.ajlivestudio.screenshare.ScreenShareController
-import com.amarjeetmaan.ajlivestudio.ui.layout.LayoutPickerMenu
-import com.amarjeetmaan.ajlivestudio.ui.layout.LayoutViewModel
-import com.amarjeetmaan.ajlivestudio.ui.layout.LayoutZonesOverlay
 import com.amarjeetmaan.ajlivestudio.ui.theme.CrimsonBright
 import com.amarjeetmaan.ajlivestudio.ui.theme.GoldPrimary
 import com.amarjeetmaan.ajlivestudio.ui.theme.LiveGreen
@@ -51,67 +43,37 @@ fun CameraPreviewScreen(
     rtmpConfig: RtmpConfig,
     onBack: () -> Unit,
     viewModel: CameraViewModel = viewModel(),
-    overlayViewModel: OverlayViewModel = viewModel(),
-    sceneViewModel: SceneViewModel = viewModel(),
-    layoutViewModel: LayoutViewModel = viewModel(),
+    overlayViewModel: OverlayViewModel = viewModel()
 ) {
     val context = LocalContext.current
     val uiState = viewModel.uiState
 
     var showWbMenu by remember { mutableStateOf(false) }
     var showOverlayPanel by remember { mutableStateOf(false) }
-    var showLayoutMenu by remember { mutableStateOf(false) }
     var showAudioMixer by remember { mutableStateOf(false) }
     
-    val screenShareController = remember { ScreenShareController(context) }
-    
-    // फिक्स: यहाँ हमने result.data (टोकन) को ViewModel में पास कर दिया है
-    val screenSharePermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        viewModel.onScreenSharePermissionResult(
-            granted = screenShareController.isResultGranted(result.resultCode),
-            data = result.data 
-        )
-    }
-
     androidx.compose.runtime.LaunchedEffect(Unit) {
         viewModel.initialize(context, setupState)
     }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
 
-        // --- Live Camera Preview Surface ---
-        // IMPORTANT: attaching any preview Surface here (tried both
-        // SurfaceView and TextureView) appears to redirect the camera
-        // source's frames to the preview INSTEAD OF the encoder — actual
-        // reported behavior: with no preview attached, video reached
-        // YouTube successfully; as soon as a preview Surface was attached,
-        // YouTube stopped receiving any video at all, while the local
-        // preview worked. This strongly suggests StreamPack (at least in
-        // this configuration) only supports ONE active output surface at a
-        // time from the camera source, and starting a preview steals it
-        // from the encoder rather than adding a second simultaneous output.
-        // Reverting to the placeholder until simultaneous preview+encode is
-        // specifically confirmed possible — reliable streaming matters more
-        // than a local preview.
+        // Preview Holder
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text(
-                if (uiState.cameraReady) "Camera ready — live preview coming soon" else "Initializing camera…",
+                if (uiState.cameraReady) "Camera ready — check stream for live output" else "Initializing camera…",
                 color = Color.White.copy(alpha = 0.4f),
                 style = MaterialTheme.typography.bodyMedium,
             )
         }
-        // -----------------------------------
 
+        // Overlays System
         OverlayLayer(
             items = overlayViewModel.items,
             editable = true,
             webReloadTick = overlayViewModel.webReloadTick,
-            onDrag = { id, x, y -> overlayViewModel.updatePosition(id, x, y) }
+            onTransform = { id, x, y, _ -> overlayViewModel.updatePosition(id, x, y) }
         )
-
-        LayoutZonesOverlay(preset = layoutViewModel.preset)
 
         // Top bar
         Column(
@@ -148,7 +110,6 @@ fun CameraPreviewScreen(
                     )
                 }
             }
-            SceneBar(sceneViewModel = sceneViewModel, overlayViewModel = overlayViewModel)
         }
 
         uiState.errorMessage?.let { message ->
@@ -205,7 +166,7 @@ fun CameraPreviewScreen(
 
             Spacer(modifier = Modifier.height(4.dp))
 
-            // Row 1: camera-related controls
+            // Main Controls
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
@@ -239,28 +200,6 @@ fun CameraPreviewScreen(
                         }
                     }
                 }
-                Box {
-                    ControlIcon(
-                        icon = Icons.Filled.GridView,
-                        label = "Layout",
-                        onClick = { showLayoutMenu = true }
-                    )
-                    LayoutPickerMenu(
-                        expanded = showLayoutMenu,
-                        onDismiss = { showLayoutMenu = false },
-                        onSelect = { layoutViewModel.selectPreset(it) }
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(4.dp))
-
-            // Row 2: production controls (audio, overlays, screen)
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
                 ControlIcon(
                     icon = if (uiState.isMicMuted) Icons.Filled.MicOff else Icons.Filled.Mic,
                     label = if (uiState.isMicMuted) "Muted" else "Mic",
@@ -273,28 +212,11 @@ fun CameraPreviewScreen(
                     onClick = { showOverlayPanel = true }
                 )
                 ControlIcon(
-                    icon = Icons.Filled.ScreenShare,
-                    label = if (uiState.screenSharePermissionGranted) "Granted" else "Screen",
-                    tint = if (uiState.screenSharePermissionGranted) GoldPrimary else Color.White,
-                    onClick = { screenSharePermissionLauncher.launch(screenShareController.createCaptureIntent()) }
-                )
-                ControlIcon(
                     icon = Icons.Filled.Tune,
-                    label = "Audio mixer",
+                    label = "Audio",
                     onClick = { showAudioMixer = true }
                 )
             }
-
-            if (uiState.screenSharePermissionGranted && !uiState.screenShareWiredToStream) {
-                Text(
-                    "Screen capture permission granted — not yet wired into the broadcast (see README)",
-                    color = GoldPrimary,
-                    style = MaterialTheme.typography.labelSmall,
-                    modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp, start = 12.dp, end = 12.dp)
-                )
-            }
-
-            Spacer(modifier = Modifier.height(6.dp))
 
             Spacer(modifier = Modifier.height(10.dp))
 
@@ -320,26 +242,6 @@ fun CameraPreviewScreen(
                         else -> "GO LIVE"
                     },
                     fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
-                )
-            }
-
-            if (!uiState.dualCameraAvailable) {
-                Text(
-                    "Second camera not available on this device",
-                    color = Color.White.copy(alpha = 0.5f),
-                    style = MaterialTheme.typography.labelSmall,
-                    modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp)
-                )
-            } else {
-                Text(
-                    if (uiState.dualCameraConcurrentSupported)
-                        "Simultaneous front+back capture: supported on this device"
-                    else
-                        "Simultaneous front+back capture: not supported on this device (has both cameras, but not concurrently)",
-                    color = if (uiState.dualCameraConcurrentSupported) LiveGreen else Color.White.copy(alpha = 0.5f),
-                    style = MaterialTheme.typography.labelSmall,
-                    modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 6.dp, start = 16.dp, end = 16.dp),
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 )
             }
         }
