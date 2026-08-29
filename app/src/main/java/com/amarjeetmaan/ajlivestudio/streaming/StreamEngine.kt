@@ -21,20 +21,76 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 
 class StreamEngine(private val context: Context) {
-    var streamer: SingleStreamer? = null
+    var cameraStreamer: SingleStreamer? = null
         private set
+    var activeStreamer: SingleStreamer? = null
+        private set
+
     private var currentCameraId: String = ""
     private var isFront: Boolean = false
 
-    suspend fun initialize(videoConfig: EngineVideoConfig, targetRotation: Int? = null) {
+    suspend fun initializeCamera(videoConfig: EngineVideoConfig, targetRotation: Int? = null) {
         val cameraId = defaultBackCameraId() ?: throw IllegalStateException("No camera found")
         currentCameraId = cameraId
         isFront = false
 
         val newStreamer = cameraSingleStreamer(context = context, cameraId = cameraId)
-        streamer = newStreamer
+        cameraStreamer = newStreamer
+        targetRotation?.let { runCatching { newStreamer.setTargetRotation(it) } }
+        withTimeoutOrNull(5_000) { newStreamer.videoInput?.sourceFlow?.filterNotNull()?.first() }
+    }
 
+    suspend fun attachAndStartScreenStreamer(streamer: SingleStreamer, videoConfig: EngineVideoConfig, rtmpUrl: String) {
+        activeStreamer = streamer
         val audioConfig = AudioConfig(startBitrate = 128_000, sampleRate = 44_100, channelConfig = AudioFormat.CHANNEL_IN_STEREO)
+        val streamPackVideoConfig = VideoConfig(startBitrate = videoConfig.bitrateBps, resolution = Size(videoConfig.width, videoConfig.height), fps = videoConfig.fps)
+        
+        streamer.setConfig(audioConfig, streamPackVideoConfig)
+        streamer.startStream(rtmpUrl)
+    }
+
+    suspend fun startCameraPreview(surface: Surface) {
+        try { cameraStreamer?.startPreview(surface) } catch (e: Exception) { e.printStackTrace() }
+    }
+
+    suspend fun stopCameraPreview() { cameraStreamer?.stopPreview() }
+
+    suspend fun stopLive() {
+        runCatching { activeStreamer?.stopStream() }
+        runCatching { activeStreamer?.close() }
+        activeStreamer = null
+    }
+
+    suspend fun flipCamera(): Boolean {
+        val s = cameraStreamer ?: return isFront
+        val nextId = if (isFront) defaultBackCameraId() else defaultFrontCameraId()
+        if (nextId == null) return isFront
+        
+        runCatching { s.setCameraId(nextId) }
+        currentCameraId = nextId
+        isFront = !isFront
+        withTimeoutOrNull(5_000) { s.videoInput?.sourceFlow?.filterNotNull()?.first() }
+        return isFront
+    }
+
+    fun muteAudio(muted: Boolean) {
+        try {
+            val audioSettings = activeStreamer?.javaClass?.getMethod("getAudioSettings")?.invoke(activeStreamer)
+            audioSettings?.javaClass?.getMethod("setMuted", Boolean::class.javaPrimitiveType)?.invoke(audioSettings, muted)
+        } catch (e: Exception) { }
+    }
+
+    fun isFrontCamera(): Boolean = isFront
+    fun isTorchAvailable(): Boolean = cameraSource()?.settings?.flash?.isAvailable ?: false
+    suspend fun setTorch(enabled: Boolean) { cameraSource()?.settings?.flash?.setIsEnable(enabled) }
+    private fun cameraSource(): ICameraSource? = cameraStreamer?.videoInput?.sourceFlow?.value as? ICameraSource
+    private fun defaultBackCameraId(): String? = findCameraId(CameraCharacteristics.LENS_FACING_BACK)
+    private fun defaultFrontCameraId(): String? = findCameraId(CameraCharacteristics.LENS_FACING_FRONT)
+    private fun findCameraId(facing: Int): String? {
+        val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        return manager.cameraIdList.firstOrNull { id -> manager.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING) == facing }
+    }
+}        val audioConfig = AudioConfig(startBitrate = 128_000, sampleRate = 44_100, channelConfig = AudioFormat.CHANNEL_IN_STEREO)
         val streamPackVideoConfig = VideoConfig(startBitrate = videoConfig.bitrateBps, resolution = Size(videoConfig.width, videoConfig.height), fps = videoConfig.fps)
         
         newStreamer.setConfig(audioConfig, streamPackVideoConfig)
