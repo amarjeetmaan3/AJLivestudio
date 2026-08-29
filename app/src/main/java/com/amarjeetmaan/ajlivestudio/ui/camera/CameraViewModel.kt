@@ -1,7 +1,7 @@
 package com.amarjeetmaan.ajlivestudio.ui.camera
 
 import android.content.Context
-import android.content.Intent
+import android.media.projection.MediaProjection
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -83,10 +83,10 @@ class CameraViewModel : ViewModel() {
         uiState = uiState.copy(isTorchOn = newState)
     }
 
-    fun goLive(rtmpUrl: String, mediaProjectionIntent: Intent) {
+    fun goLive(rtmpUrl: String, mediaProjection: MediaProjection) {
         uiState = uiState.copy(streamState = StreamState.CONNECTING, errorMessage = null)
         viewModelScope.launch {
-            runCatching { engine?.goLive(rtmpUrl, mediaProjectionIntent) }
+            runCatching { engine?.goLive(rtmpUrl, mediaProjection) }
                 .onSuccess { uiState = uiState.copy(streamState = StreamState.LIVE) }
                 .onFailure { e -> uiState = uiState.copy(streamState = StreamState.ERROR, errorMessage = e.message ?: "Failed") }
         }
