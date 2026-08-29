@@ -10,5 +10,5 @@ data class OverlayItem(
     val content: String,
     var x: Float = 0f,
     var y: Float = 0f,
-    var scale: Float = 1f // नया फीचर: बड़ा/छोटा करने के लिए
+    var scale: Float = 1f
 )
