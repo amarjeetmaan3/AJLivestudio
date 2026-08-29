@@ -3,27 +3,17 @@ package com.amarjeetmaan.ajlivestudio.screenshare
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 
 /**
- * Wraps the standard Android MediaProjection permission flow.
+ * Wraps the standard Android MediaProjection permission flow, confirmed
+ * against StreamPack 3.2.0's real, published Dokka API
+ * (thibaultbee.github.io/StreamPack/streampack-core) — not guessed.
  *
- * This part is solid, verified, standard Android API (not StreamPack-
- * specific) — createScreenCaptureIntent() + the system "Start recording
- * or casting?" dialog.
- *
- * What's NOT wired up yet: feeding the granted MediaProjection into
- * StreamPack's encoder as a video source. StreamPack does support this
- * (its README references a screen-recorder service + demos/screenrecorder
- * sample), but different README snapshots I found named the base service
- * class differently across versions (MediaProjectionService vs
- * DefaultScreenRecorderService vs ScreenRecorderRtmpLiveService) — enough
- * inconsistency that guessing which one matches whatever 3.1.2 actually
- * ships would be exactly the kind of blind-typed code that silently fails
- * to compile or, worse, compiles against the wrong class and crashes at
- * runtime. That wiring is the concrete next step once confirmed against
- * the actual resolved dependency (check demos/screenrecorder in
- * github.com/ThibaultBee/StreamPack for the version Gradle resolves).
+ * getMediaProjection() must only be called AFTER a foreground service of
+ * type "mediaProjection" (ScreenShareService) is already running — that's
+ * an Android 14+ requirement, not a StreamPack one.
  */
 class ScreenShareController(private val context: Context) {
 
@@ -33,4 +23,12 @@ class ScreenShareController(private val context: Context) {
     fun createCaptureIntent(): Intent = projectionManager.createScreenCaptureIntent()
 
     fun isResultGranted(resultCode: Int): Boolean = resultCode == Activity.RESULT_OK
+
+    /**
+     * Turns the raw ActivityResult (resultCode + data Intent) from the
+     * system's screen-capture permission dialog into a real MediaProjection
+     * object that StreamPack's MediaProjectionVideoSourceFactory can use.
+     */
+    fun getMediaProjection(resultCode: Int, data: Intent): MediaProjection =
+        projectionManager.getMediaProjection(resultCode, data)
 }
