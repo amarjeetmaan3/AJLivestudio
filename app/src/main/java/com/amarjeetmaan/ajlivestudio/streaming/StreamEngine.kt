@@ -13,27 +13,22 @@ import io.github.thibaultbee.streampack.core.interfaces.startPreview
 import io.github.thibaultbee.streampack.core.interfaces.startStream
 import io.github.thibaultbee.streampack.core.interfaces.stopPreview
 import io.github.thibaultbee.streampack.core.streamers.single.AudioConfig
-import io.github.thibaultbee.streampack.core.streamers.single.SingleStreamer
 import io.github.thibaultbee.streampack.core.streamers.single.VideoConfig
-import io.github.thibaultbee.streampack.core.streamers.single.cameraSingleStreamer
 import io.github.thibaultbee.streampack.core.streamers.single.setConfig
+import io.github.thibaultbee.streampack.ext.rtmp.streamers.CameraRtmpLiveStreamer
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * ONE pipeline, camera straight to encoder:
+ * ONE pipeline, camera straight to encoder via CameraRtmpLiveStreamer for YouTube RTMP.
  *
  *   Camera -> OverlayCompositor (GPU/GLES, bakes overlay bitmap in)
- *          -> [preview surface]   (phone screen)
- *          -> [encoder surface]   (MediaCodec, via StreamPack) -> RTMP -> YouTube
- *
- * There is exactly one SingleStreamer (`streamer`), used for local
- * preview AND for the actual broadcast. No MediaProjection, no screen
- * capture, no second streamer anywhere in this class.
+ *          -> [preview surface]   (phone/tablet screen)
+ *          -> [encoder surface]   (MediaCodec, via StreamPack RTMP) -> YouTube
  */
 class StreamEngine(private val context: Context) {
-    var streamer: SingleStreamer? = null
+    var streamer: CameraRtmpLiveStreamer? = null
         private set
 
     private var currentCameraId: String = ""
@@ -44,9 +39,10 @@ class StreamEngine(private val context: Context) {
         currentCameraId = cameraId
         isFront = false
 
-        val newStreamer = cameraSingleStreamer(
+        // Changed to CameraRtmpLiveStreamer to push valid RTMP frames to YouTube
+        val newStreamer = CameraRtmpLiveStreamer(
             context = context,
-            cameraId = cameraId,
+            initialOnErrorListener = { err -> err.printStackTrace() },
             surfaceProcessorFactory = OverlayCompositor.Factory()
         )
         targetRotation?.let { runCatching { newStreamer.setTargetRotation(it) } }
@@ -54,12 +50,13 @@ class StreamEngine(private val context: Context) {
         val audioConfig = AudioConfig(startBitrate = 128_000, sampleRate = 44_100, channelConfig = AudioFormat.CHANNEL_IN_STEREO)
         val streamPackVideoConfig = VideoConfig(startBitrate = videoConfig.bitrateBps, resolution = Size(videoConfig.width, videoConfig.height), fps = videoConfig.fps)
         newStreamer.setConfig(audioConfig, streamPackVideoConfig)
+        
+        runCatching { newStreamer.setCameraId(cameraId) }
 
         streamer = newStreamer
         withTimeoutOrNull(5_000) { newStreamer.videoInput?.sourceFlow?.filterNotNull()?.first() }
     }
 
-    /** Pushes the latest pre-rendered overlay bitmap into the compositor. */
     fun updateOverlay(bitmap: Bitmap?) {
         OverlayCompositor.Factory.instance?.setOverlayBitmap(bitmap)
     }
@@ -70,7 +67,6 @@ class StreamEngine(private val context: Context) {
 
     suspend fun stopCameraPreview() { streamer?.stopPreview() }
 
-    /** Direct camera -> RTMP. No popup, no MediaProjection, same streamer as preview. */
     suspend fun goLive(rtmpUrl: String) {
         streamer?.startStream(rtmpUrl)
     }
