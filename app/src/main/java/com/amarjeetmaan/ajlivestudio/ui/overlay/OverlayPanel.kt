@@ -34,13 +34,11 @@ fun OverlayPanel(viewModel: OverlayViewModel, onDismiss: () -> Unit) {
                     modifier = Modifier.weight(1f)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-                Button(onClick = { viewModel.addText(textInput); textInput = "" }) {
-                    Text("Add")
-                }
+                Button(onClick = { viewModel.addText(textInput); textInput = "" }) { Text("Add") }
             }
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Add Lower Third
+            // Add Lower Third (RESTORED)
             Text("Lower Third", style = MaterialTheme.typography.labelLarge)
             Row(modifier = Modifier.fillMaxWidth()) {
                 OutlinedTextField(
@@ -72,9 +70,7 @@ fun OverlayPanel(viewModel: OverlayViewModel, onDismiss: () -> Unit) {
             Spacer(modifier = Modifier.height(16.dp))
 
             // Add Logo
-            Button(onClick = { logoPicker.launch("image/*") }, modifier = Modifier.fillMaxWidth()) {
-                Text("Pick Logo from Gallery")
-            }
+            Button(onClick = { logoPicker.launch("image/*") }, modifier = Modifier.fillMaxWidth()) { Text("Pick Logo from Gallery") }
             Spacer(modifier = Modifier.height(16.dp))
 
             // Add Web Widget
@@ -86,9 +82,7 @@ fun OverlayPanel(viewModel: OverlayViewModel, onDismiss: () -> Unit) {
                     modifier = Modifier.weight(1f)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-                Button(onClick = { viewModel.addWeb(webUrlInput); webUrlInput = "https://" }) {
-                    Text("Add")
-                }
+                Button(onClick = { viewModel.addWeb(webUrlInput); webUrlInput = "https://" }) { Text("Add") }
             }
             Spacer(modifier = Modifier.height(24.dp))
 
@@ -97,9 +91,7 @@ fun OverlayPanel(viewModel: OverlayViewModel, onDismiss: () -> Unit) {
             viewModel.items.forEach { item ->
                 Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                     Text("${item.type.name} Overlay", modifier = Modifier.padding(vertical = 8.dp))
-                    TextButton(onClick = { viewModel.remove(item.id) }) {
-                        Text("Remove", color = MaterialTheme.colorScheme.error)
-                    }
+                    TextButton(onClick = { viewModel.remove(item.id) }) { Text("Remove", color = MaterialTheme.colorScheme.error) }
                 }
             }
             Spacer(modifier = Modifier.height(32.dp))
