@@ -16,21 +16,16 @@ import com.amarjeetmaan.ajlivestudio.ui.overlay.OverlayItem
 import com.amarjeetmaan.ajlivestudio.ui.overlay.OverlayType
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * Renders all overlay items onto an ARGB Bitmap, now including live Web Overlays.
- * Web Overlays are natively captured off-screen and synced with the GL compositor.
- */
 object OverlayRenderer {
 
     private val logoCache = HashMap<String, Bitmap>()
     
-    // Web Overlay Background Capture System
     private val webViews = ConcurrentHashMap<String, WebView>()
+    private val initializingWebViews = ConcurrentHashMap<String, Boolean>()
     private val webBitmaps = ConcurrentHashMap<String, Bitmap>()
     private val mainHandler = Handler(Looper.getMainLooper())
     @Volatile private var isWebLoopRunning = false
     
-    // State cache to trigger auto-renders for web animations
     private var lastContext: Context? = null
     private var lastItems: List<OverlayItem> = emptyList()
     private var lastVideoWidth = 0
@@ -79,7 +74,7 @@ object OverlayRenderer {
                 OverlayType.LOGO -> drawLogo(context, canvas, item, x, y, itemScale, density)
                 OverlayType.WEB -> {
                     hasWeb = true
-                    drawWeb(context, canvas, item, x, y, itemScale, density, videoWidth, videoHeight)
+                    drawWeb(context, canvas, item, x, y, itemScale, density)
                 }
             }
         }
@@ -167,13 +162,14 @@ object OverlayRenderer {
         canvas.drawBitmap(bitmap, null, dest, Paint(Paint.ANTI_ALIAS_FLAG))
     }
 
-    private fun drawWeb(context: Context, canvas: Canvas, item: OverlayItem, x: Float, y: Float, scale: Float, density: Float, vW: Int, vH: Int) {
+    private fun drawWeb(context: Context, canvas: Canvas, item: OverlayItem, x: Float, y: Float, scale: Float, density: Float) {
         val url = item.content
         val targetWidth = (400f * density * scale).toInt().coerceAtLeast(100)
         val targetHeight = (300f * density * scale).toInt().coerceAtLeast(100)
 
-        if (!webViews.containsKey(url)) {
-            webViews[url] = null // Init placeholder
+        // Fix: Removed null assignment to prevent ConcurrentHashMap Exception
+        if (!webViews.containsKey(url) && !initializingWebViews.containsKey(url)) {
+            initializingWebViews[url] = true
             mainHandler.post {
                 val webView = WebView(context).apply {
                     settings.javaScriptEnabled = true
@@ -181,15 +177,14 @@ object OverlayRenderer {
                     settings.mediaPlaybackRequiresUserGesture = false
                     setBackgroundColor(Color.TRANSPARENT)
                     webViewClient = WebViewClient()
-                    // Fixed resolution layout to ensure widgets render correctly
                     layout(0, 0, 1280, 720)
                     loadUrl(url)
                 }
                 webViews[url] = webView
+                initializingWebViews.remove(url)
             }
         }
 
-        // Draw the latest captured bitmap from the background task
         val bmp = webBitmaps[url]
         if (bmp != null && !bmp.isRecycled) {
             val dest = RectF(x, y, x + targetWidth, y + targetHeight)
@@ -204,7 +199,7 @@ object OverlayRenderer {
                 var capturedAny = false
 
                 for ((url, view) in webViews) {
-                    if (view == null || view.width <= 0 || view.height <= 0) continue
+                    if (view.width <= 0 || view.height <= 0) continue
                     try {
                         var bmp = webBitmaps[url]
                         if (bmp == null || bmp.width != view.width || bmp.height != view.height) {
@@ -229,7 +224,7 @@ object OverlayRenderer {
                 }
 
                 if (isWebLoopRunning) {
-                    mainHandler.postDelayed(this, 100) // ~10 FPS background capture for smooth widget animations
+                    mainHandler.postDelayed(this, 100)
                 }
             }
         }, 100)
