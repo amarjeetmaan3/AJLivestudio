@@ -1,7 +1,6 @@
 package com.amarjeetmaan.ajlivestudio.streaming
 
 import android.content.Context
-import android.content.Intent
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.media.AudioFormat
