@@ -2,9 +2,6 @@ package com.amarjeetmaan.ajlivestudio.ui.camera
 
 import android.app.Activity
 import android.content.pm.ActivityInfo
-import android.graphics.SurfaceTexture
-import android.view.Surface
-import android.view.TextureView
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -42,7 +39,6 @@ import com.amarjeetmaan.ajlivestudio.ui.theme.CrimsonBright
 import com.amarjeetmaan.ajlivestudio.ui.theme.GoldPrimary
 import com.amarjeetmaan.ajlivestudio.ui.theme.LiveGreen
 import com.amarjeetmaan.ajlivestudio.ui.theme.NavyDeep
-import kotlin.math.roundToInt
 
 @Composable
 fun CameraPreviewScreen(
@@ -94,19 +90,21 @@ fun CameraPreviewScreen(
         if (uiState.cameraReady) {
             val previewRatio = if (isLandscape) 16f / 9f else 9f / 16f
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                AndroidView(
-                    modifier = Modifier.fillMaxWidth().aspectRatio(previewRatio).background(Color.Black),
-                    factory = { ctx ->
-                        TextureView(ctx).apply {
-                            surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-                                override fun onSurfaceTextureAvailable(surfaceTexture: SurfaceTexture, width: Int, height: Int) { viewModel.startPreview(Surface(surfaceTexture)) }
-                                override fun onSurfaceTextureSizeChanged(surfaceTexture: SurfaceTexture, width: Int, height: Int) {}
-                                override fun onSurfaceTextureDestroyed(surfaceTexture: SurfaceTexture): Boolean { viewModel.stopPreview(); return true }
-                                override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) {}
+                // SurfaceView को aspectRatio के साथ रखा गया है ताकि स्ट्रेचिंग न हो
+                Box(modifier = Modifier.fillMaxWidth().aspectRatio(previewRatio).background(Color.Black)) {
+                    AndroidView(
+                        modifier = Modifier.fillMaxSize(),
+                        factory = { ctx ->
+                            android.view.SurfaceView(ctx).apply {
+                                holder.addCallback(object : android.view.SurfaceHolder.Callback {
+                                    override fun surfaceCreated(holder: android.view.SurfaceHolder) { viewModel.startPreview(holder.surface) }
+                                    override fun surfaceChanged(holder: android.view.SurfaceHolder, format: Int, w: Int, h: Int) {}
+                                    override fun surfaceDestroyed(holder: android.view.SurfaceHolder) { viewModel.stopPreview() }
+                                })
                             }
                         }
-                    }
-                )
+                    )
+                }
             }
         }
 
@@ -131,9 +129,10 @@ fun CameraPreviewScreen(
 
         Column(modifier = Modifier.fillMaxWidth().align(Alignment.BottomCenter).background(NavyDeep.copy(alpha = 0.8f)).padding(bottom = 16.dp, top = 10.dp)) {
             Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-                ControlIcon(icon = Icons.Filled.Cameraswitch, label = "Flip", enabled = uiState.streamState != StreamState.LIVE, onClick = { viewModel.flip() })
+                // Flip बटन अब लाइव स्ट्रीम के दौरान भी इनेबल रहेगा
+                ControlIcon(icon = Icons.Filled.Cameraswitch, label = "Flip", enabled = true, onClick = { viewModel.flip() })
                 ControlIcon(icon = if (uiState.isTorchOn) Icons.Filled.FlashOn else Icons.Filled.FlashOff, label = "Torch", tint = if (uiState.isTorchOn) GoldPrimary else Color.White, enabled = uiState.isTorchAvailable, onClick = { viewModel.toggleTorch() })
-                ControlIcon(icon = if (uiState.isMicMuted) Icons.Filled.MicOff else Icons.Filled.Mic, label = "Mic", tint = if (uiState.isMicMuted) CrimsonBright else Color.White, onClick = { viewModel.toggleMic() })
+                ControlIcon(icon = if (uiState.isMicMuted) Icons.Filled.MicOff else Icons.Filled.Mic, label = "Mic", tint = if (uiState.isMicMuted) CrimsonBright else Color.White, onClick = { viewModel.toggleMic(context) })
                 ControlIcon(icon = Icons.Filled.Layers, label = "Overlays", onClick = { showOverlayPanel = true })
             }
 
