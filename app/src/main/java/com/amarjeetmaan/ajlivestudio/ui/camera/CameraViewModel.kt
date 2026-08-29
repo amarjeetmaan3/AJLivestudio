@@ -1,7 +1,7 @@
 package com.amarjeetmaan.ajlivestudio.ui.camera
 
 import android.content.Context
-import android.content.Intent
+import android.graphics.Bitmap
 import android.view.Surface
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -10,10 +10,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.amarjeetmaan.ajlivestudio.audio.AudioController
 import com.amarjeetmaan.ajlivestudio.streaming.EngineVideoConfig
+import com.amarjeetmaan.ajlivestudio.streaming.OverlayRenderer
 import com.amarjeetmaan.ajlivestudio.streaming.StreamEngine
+import com.amarjeetmaan.ajlivestudio.ui.overlay.OverlayItem
 import com.amarjeetmaan.ajlivestudio.ui.setup.BitratePreset
 import com.amarjeetmaan.ajlivestudio.ui.setup.StudioSetupState
-import io.github.thibaultbee.streampack.services.MediaProjectionService
 import kotlinx.coroutines.launch
 
 class CameraViewModel : ViewModel() {
@@ -66,33 +67,36 @@ class CameraViewModel : ViewModel() {
         viewModelScope.launch { engine?.stopCameraPreview() }
     }
 
-    fun startScreenLive(context: Context, resultCode: Int, data: Intent, rtmpUrl: String) {
+    /**
+     * Re-renders the overlay items (TEXT/LOGO/LOWER_THIRD) into a bitmap at
+     * video resolution and pushes it into the GPU compositor, so it's baked
+     * into both the local preview and the actual outgoing stream.
+     */
+    fun updateOverlayBitmap(
+        context: Context,
+        items: List<OverlayItem>,
+        containerWidthPx: Int,
+        containerHeightPx: Int
+    ) {
+        val state = currentSetupState ?: return
+        val bitmap: Bitmap? = OverlayRenderer.render(
+            context = context,
+            items = items,
+            containerWidthPx = containerWidthPx,
+            containerHeightPx = containerHeightPx,
+            videoWidth = state.resolution.width,
+            videoHeight = state.resolution.height
+        )
+        engine?.updateOverlay(bitmap)
+    }
+
+    /** Direct camera -> RTMP. No popup, no screen capture. */
+    fun goLive(rtmpUrl: String) {
         uiState = uiState.copy(streamState = StreamState.CONNECTING, errorMessage = null)
-        try {
-            MediaProjectionService.bindService(
-                context,
-                com.amarjeetmaan.ajlivestudio.screenshare.ScreenShareService::class.java,
-                resultCode,
-                data
-            ) { streamer ->
-                viewModelScope.launch {
-                    try {
-                        val state = currentSetupState ?: return@launch
-                        val videoConfig = EngineVideoConfig(
-                            width = state.resolution.width,
-                            height = state.resolution.height,
-                            fps = state.frameRate.value,
-                            bitrateBps = resolveBitrateBps(state.bitrate, state.resolution.width)
-                        )
-                        engine?.attachAndStartScreenStreamer(streamer, videoConfig, rtmpUrl)
-                        uiState = uiState.copy(streamState = StreamState.LIVE)
-                    } catch (e: Exception) {
-                        uiState = uiState.copy(streamState = StreamState.ERROR, errorMessage = e.message)
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            uiState = uiState.copy(streamState = StreamState.ERROR, errorMessage = e.message)
+        viewModelScope.launch {
+            runCatching { engine?.goLive(rtmpUrl) }
+                .onSuccess { uiState = uiState.copy(streamState = StreamState.LIVE) }
+                .onFailure { e -> uiState = uiState.copy(streamState = StreamState.ERROR, errorMessage = e.message) }
         }
     }
 
@@ -100,7 +104,6 @@ class CameraViewModel : ViewModel() {
         viewModelScope.launch {
             runCatching { engine?.stopLive() }
             uiState = uiState.copy(streamState = StreamState.IDLE)
-            context.stopService(Intent(context, com.amarjeetmaan.ajlivestudio.screenshare.ScreenShareService::class.java))
         }
     }
 
