@@ -82,19 +82,33 @@ class OverlayCompositor : ISurfaceProcessorInternal {
         this.timebase = timebase
         var result: Surface? = null
         runOnGlThreadBlocking {
-            if (cameraTextureId == 0) cameraTextureId = createExternalTexture()
+            // FIX: Create a temporary pbuffer to ensure the GL context is ACTIVE 
+            // before creating the SurfaceTexture. This prevents the camera from stalling.
+            val pbufferAttribs = intArrayOf(EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE)
+            val pbuffer = EGL14.eglCreatePbufferSurface(eglDisplay, eglConfig, pbufferAttribs, 0)
+            EGL14.eglMakeCurrent(eglDisplay, pbuffer, pbuffer, eglContext)
+
+            if (cameraTextureId == 0) {
+                cameraTextureId = createExternalTexture()
+            }
             val st = SurfaceTexture(cameraTextureId)
             st.setDefaultBufferSize(surfaceSize.width, surfaceSize.height)
             st.setOnFrameAvailableListener({
                 synchronized(frameLock) { frameAvailable = true }
                 drawFrame()
             }, glHandler)
+            
             surfaceTexture?.release()
             surfaceTexture = st
+            
             val surface = Surface(st)
             inputSurface?.release()
             inputSurface = surface
             result = surface
+
+            // Cleanup temp pbuffer
+            EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
+            EGL14.eglDestroySurface(eglDisplay, pbuffer)
         }
         return result!!
     }
@@ -201,262 +215,16 @@ class OverlayCompositor : ISurfaceProcessorInternal {
         val attribList = intArrayOf(
             EGL14.EGL_RED_SIZE, 8,
             EGL14.EGL_GREEN_SIZE, 8,
-            EGL14.EGL_BLUE_SIZE, 8,
-            EGL14.EGL_ALPHA_SIZE, 8,
-            EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
-            0x3142, 1,
-            EGL14.EGL_NONE
-        )
-        val configs = arrayOfNulls<EGLConfig>(1)
-        val numConfigs = IntArray(1)
-        EGL14.eglChooseConfig(eglDisplay, attribList, 0, configs, 0, 1, numConfigs, 0)
-        eglConfig = configs[0] ?: error("Unable to find suitable EGLConfig")
+            EGL14.EGL_BLUE_SIZEयह एरर आमतौर पर लाइव ब्रॉडकास्टिंग, स्क्रीन कैप्चर, या एंड्रॉइड में कस्टम स्ट्रीमिंग प्लेयर (जैसे RTMP ब्रॉडकास्ट) बनाते समय आता है जब सिस्टम को रेंडर करने के लिए कोई विज़ुअल डेटा या सोर्स नहीं मिलता। 
 
-        val ctxAttribs = intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE)
-        eglContext = EGL14.eglCreateContext(eglDisplay, eglConfig, EGL14.EGL_NO_CONTEXT, ctxAttribs, 0)
-        check(eglContext != EGL14.EGL_NO_CONTEXT) { "Unable to create EGL context" }
+**कस्टम एंड्रॉइड ऐप्स (Kotlin & Broadcasting)**
+* **कैमरा परमिशन और लाइफसाइकिल:** चेक करें कि `AndroidManifest.xml` में `CAMERA` परमिशन दी गई है और रनटाइम पर यूज़र ने इसे अप्रूव किया है। CameraX या Camera2 API का इस्तेमाल करते समय सुनिश्चित करें कि कैमरा पूरी तरह इनिशियलाइज़ होने से पहले एनकोडर फ्रेम न मांग रहा हो।
+* **Surface या TextureView:** अगर आप लाइव कास्टिंग के लिए कस्टम लेआउट या ग्राफिक ओवरले बना रहे हैं, तो सुनिश्चित करें कि आपका Surface सही से इनिशियलाइज़ हुआ है और वीडियो एनकोडर (MediaCodec) को लगातार फ्रेम पास कर रहा है।
+* **स्ट्रीम सोर्स:** अगर आप किसी नेटवर्क से वीडियो स्ट्रीम प्ले कर रहे हैं, तो चेक करें कि स्ट्रीमिंग यूआरएल (URL) एक्टिव है और वीडियो पैकेट्स सर्वर से सही से आ रहे हैं। 
 
-        val pbufferAttribs = intArrayOf(EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE)
-        val pbuffer = EGL14.eglCreatePbufferSurface(eglDisplay, eglConfig, pbufferAttribs, 0)
-        EGL14.eglMakeCurrent(eglDisplay, pbuffer, pbuffer, eglContext)
+**लाइव स्ट्रीमिंग और रिकॉर्डिंग टूल्स (PRISM, Streamlabs, AZ Screen Recorder)**
+* **सोर्स रीसेट करें:** स्ट्रीमिंग ऐप में अगर कैमरा या स्क्रीन कैप्चर काम नहीं कर रहा है, तो उस विज़ुअल सोर्स को हटाकर दोबारा ऐड करें। 
+* **हार्डवेयर एनकोडिंग (Hardware Acceleration):** ऐप की सेटिंग्स में जाकर वीडियो एनकोडिंग सेटिंग्स को बदलें। कई बार डिवाइस का हार्डवेयर एनकोडर स्ट्रीमिंग सॉफ्टवेयर के साथ सिंक नहीं हो पाता, ऐसे में इसे डिसेबल करके ट्राई करें।
+* **ओवरले परमिशन:** डिवाइस सेटिंग्स में जाकर स्क्रीन रिकॉर्डर या ब्रॉडकास्टिंग ऐप को 'Display over other apps' की परमिशन दें, खासकर अगर आप स्क्रीन रिकॉर्डिंग कर रहे हैं।
 
-        cameraProgram = buildProgram(CAMERA_VERTEX_SHADER, CAMERA_FRAGMENT_SHADER)
-        overlayProgram = buildProgram(OVERLAY_VERTEX_SHADER, OVERLAY_FRAGMENT_SHADER)
-        overlayTextureId = create2DTexture()
-
-        EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
-        EGL14.eglDestroySurface(eglDisplay, pbuffer)
-    }
-
-    private fun releaseEgl() {
-        if (eglDisplay != EGL14.EGL_NO_DISPLAY) {
-            EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
-            EGL14.eglDestroyContext(eglDisplay, eglContext)
-            EGL14.eglTerminate(eglDisplay)
-        }
-        eglDisplay = EGL14.EGL_NO_DISPLAY
-        eglContext = EGL14.EGL_NO_CONTEXT
-    }
-
-    private fun createWindowSurface(surface: Surface): EGLSurface {
-        val attribs = intArrayOf(EGL14.EGL_NONE)
-        return EGL14.eglCreateWindowSurface(eglDisplay, eglConfig, surface, attribs, 0)
-    }
-
-    private fun destroyWindowSurface(eglSurface: EGLSurface) {
-        if (eglSurface != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(eglDisplay, eglSurface)
-    }
-
-    private fun createExternalTexture(): Int {
-        val tex = IntArray(1)
-        GLES20.glGenTextures(1, tex, 0)
-        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, tex[0])
-        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
-        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
-        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
-        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
-        return tex[0]
-    }
-
-    private fun create2DTexture(): Int {
-        val tex = IntArray(1)
-        GLES20.glGenTextures(1, tex, 0)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex[0])
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
-        return tex[0]
-    }
-
-    private fun maybeUploadOverlay() {
-        if (overlayBitmapVersion == uploadedOverlayVersion) return
-        uploadedOverlayVersion = overlayBitmapVersion
-        val bmp = pendingOverlayBitmap
-        if (bmp != null && !bmp.isRecycled) {
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, overlayTextureId)
-            GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0)
-            hasOverlay = true
-        } else {
-            hasOverlay = false
-        }
-    }
-
-    private fun drawFrame() {
-        runOnGlThread {
-            val st = surfaceTexture ?: return@runOnGlThread
-            synchronized(frameLock) {
-                if (!frameAvailable) return@runOnGlThread
-                frameAvailable = false
-            }
-
-            val entries = synchronized(outputsLock) { outputs.toList() }
-            if (entries.isEmpty()) {
-                val pbufferAttribs = intArrayOf(EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE)
-                val pbuffer = EGL14.eglCreatePbufferSurface(eglDisplay, eglConfig, pbufferAttribs, 0)
-                EGL14.eglMakeCurrent(eglDisplay, pbuffer, pbuffer, eglContext)
-                st.updateTexImage()
-                st.getTransformMatrix(texMatrix)
-                EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
-                EGL14.eglDestroySurface(eglDisplay, pbuffer)
-                return@runOnGlThread
-            }
-
-            EGL14.eglMakeCurrent(eglDisplay, entries[0].eglSurface, entries[0].eglSurface, eglContext)
-            st.updateTexImage()
-            st.getTransformMatrix(texMatrix)
-            maybeUploadOverlay()
-            val timestampNs = st.timestamp
-
-            for (entry in entries) {
-                EGL14.eglMakeCurrent(eglDisplay, entry.eglSurface, entry.eglSurface, eglContext)
-                val size = entry.output.targetResolution
-                GLES20.glViewport(0, 0, size.width, size.height)
-                GLES20.glClearColor(0f, 0f, 0f, 1f)
-                GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-
-                val outMatrix = FloatArray(16)
-                entry.output.updateTransformMatrix(outMatrix, texMatrix)
-                drawCamera(outMatrix)
-                if (hasOverlay) drawOverlay()
-
-                EGLExt.eglPresentationTimeANDROID(eglDisplay, entry.eglSurface, timestampNs)
-                EGL14.eglSwapBuffers(eglDisplay, entry.eglSurface)
-            }
-        }
-    }
-
-    private fun drawCamera(matrix: FloatArray) {
-        GLES20.glDisable(GLES20.GL_BLEND)
-        GLES20.glUseProgram(cameraProgram)
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, cameraTextureId)
-
-        val posLoc = GLES20.glGetAttribLocation(cameraProgram, "aPosition")
-        val texLoc = GLES20.glGetAttribLocation(cameraProgram, "aTextureCoord")
-        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(cameraProgram, "uTexMatrix"), 1, false, matrix, 0)
-        GLES20.glUniform1i(GLES20.glGetUniformLocation(cameraProgram, "sTexture"), 0)
-
-        vertexBuffer.position(0)
-        GLES20.glVertexAttribPointer(posLoc, 2, GLES20.GL_FLOAT, false, 0, vertexBuffer)
-        GLES20.glEnableVertexAttribArray(posLoc)
-        cameraTexCoordBuffer.position(0)
-        GLES20.glVertexAttribPointer(texLoc, 4, GLES20.GL_FLOAT, false, 0, cameraTexCoordBuffer)
-        GLES20.glEnableVertexAttribArray(texLoc)
-
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
-        GLES20.glDisableVertexAttribArray(posLoc)
-        GLES20.glDisableVertexAttribArray(texLoc)
-    }
-
-    private fun drawOverlay() {
-        GLES20.glEnable(GLES20.GL_BLEND)
-        // Fixed blend function to avoid black fringing around text and web components
-        GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA)
-        GLES20.glUseProgram(overlayProgram)
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, overlayTextureId)
-
-        val posLoc = GLES20.glGetAttribLocation(overlayProgram, "aPosition")
-        val texLoc = GLES20.glGetAttribLocation(overlayProgram, "aTextureCoord")
-        GLES20.glUniform1i(GLES20.glGetUniformLocation(overlayProgram, "sTexture"), 0)
-
-        vertexBuffer.position(0)
-        GLES20.glVertexAttribPointer(posLoc, 2, GLES20.GL_FLOAT, false, 0, vertexBuffer)
-        GLES20.glEnableVertexAttribArray(posLoc)
-        overlayTexCoordBuffer.position(0)
-        GLES20.glVertexAttribPointer(texLoc, 2, GLES20.GL_FLOAT, false, 0, overlayTexCoordBuffer)
-        GLES20.glEnableVertexAttribArray(texLoc)
-
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
-        GLES20.glDisableVertexAttribArray(posLoc)
-        GLES20.glDisableVertexAttribArray(texLoc)
-        GLES20.glDisable(GLES20.GL_BLEND)
-    }
-
-    private fun loadShader(type: Int, src: String): Int {
-        val shader = GLES20.glCreateShader(type)
-        GLES20.glShaderSource(shader, src)
-        GLES20.glCompileShader(shader)
-        val status = IntArray(1)
-        GLES20.glGetShaderiv(shader, GLES20.GL_COMPILE_STATUS, status, 0)
-        if (status[0] == 0) {
-            val log = GLES20.glGetShaderInfoLog(shader)
-            GLES20.glDeleteShader(shader)
-            error("Shader compile failed: $log")
-        }
-        return shader
-    }
-
-    private fun buildProgram(vertexSrc: String, fragmentSrc: String): Int {
-        val vs = loadShader(GLES20.GL_VERTEX_SHADER, vertexSrc)
-        val fs = loadShader(GLES20.GL_FRAGMENT_SHADER, fragmentSrc)
-        val program = GLES20.glCreateProgram()
-        GLES20.glAttachShader(program, vs)
-        GLES20.glAttachShader(program, fs)
-        GLES20.glLinkProgram(program)
-        val status = IntArray(1)
-        GLES20.glGetProgramiv(program, GLES20.GL_LINK_STATUS, status, 0)
-        if (status[0] == 0) {
-            val log = GLES20.glGetProgramInfoLog(program)
-            GLES20.glDeleteProgram(program)
-            error("Program link failed: $log")
-        }
-        return program
-    }
-
-    companion object {
-        private const val CAMERA_VERTEX_SHADER = """
-            attribute vec4 aPosition;
-            attribute vec4 aTextureCoord;
-            uniform mat4 uTexMatrix;
-            varying vec2 vTextureCoord;
-            void main() {
-                gl_Position = aPosition;
-                vTextureCoord = (uTexMatrix * aTextureCoord).xy;
-            }
-        """
-
-        private const val CAMERA_FRAGMENT_SHADER = """
-            #extension GL_OES_EGL_image_external : require
-            precision mediump float;
-            varying vec2 vTextureCoord;
-            uniform samplerExternalOES sTexture;
-            void main() {
-                gl_FragColor = texture2D(sTexture, vTextureCoord);
-            }
-        """
-
-        private const val OVERLAY_VERTEX_SHADER = """
-            attribute vec4 aPosition;
-            attribute vec2 aTextureCoord;
-            varying vec2 vTextureCoord;
-            void main() {
-                gl_Position = aPosition;
-                vTextureCoord = aTextureCoord;
-            }
-        """
-
-        private const val OVERLAY_FRAGMENT_SHADER = """
-            precision mediump float;
-            varying vec2 vTextureCoord;
-            uniform sampler2D sTexture;
-            void main() {
-                gl_FragColor = texture2D(sTexture, vTextureCoord);
-            }
-        """
-
-        private val FULLSCREEN_VERTS = floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f)
-        private val CAMERA_TEXCOORDS = floatArrayOf(0f, 0f, 0f, 1f, 1f, 0f, 0f, 1f, 0f, 1f, 0f, 1f, 1f, 1f, 0f, 1f)
-        private val OVERLAY_TEXCOORDS = floatArrayOf(0f, 1f, 1f, 1f, 0f, 0f, 1f, 0f)
-
-        private fun floatBuffer(data: FloatArray): FloatBuffer =
-            ByteBuffer.allocateDirect(data.size * 4).order(ByteOrder.nativeOrder()).asFloatBuffer().apply {
-                put(data); position(0)
-            }
-
-        private val vertexBuffer = floatBuffer(FULLSCREEN_VERTS)
-        private val cameraTexCoordBuffer = floatBuffer(CAMERA_TEXCOORDS)
-        private val overlayTexCoordBuffer = floatBuffer(OVERLAY_TEXCOORDS)
-    }
-}
+क्या यह एरर आपको अपने किसी कस्टम ऐप के डेवलपमेंट के दौरान आ रहा है, या किसी थर्ड-पार्टी स्ट्रीमिंग सॉफ्टवेयर का इस्तेमाल करते समय?
