@@ -1,6 +1,7 @@
 package com.amarjeetmaan.ajlivestudio.streaming
 
 import android.content.Context
+import android.content.Intent
 import android.media.AudioFormat
 import android.util.Size
 
@@ -9,28 +10,34 @@ import io.github.thibaultbee.streampack.core.streamers.single.AudioConfig
 import io.github.thibaultbee.streampack.core.streamers.single.SingleStreamer
 import io.github.thibaultbee.streampack.core.streamers.single.VideoConfig
 import io.github.thibaultbee.streampack.core.streamers.single.cameraSingleStreamer
-import io.github.thibaultbee.streampack.core.streamers.single.setAudioConfig
-import io.github.thibaultbee.streampack.core.streamers.single.setVideoConfig
+import io.github.thibaultbee.streampack.core.streamers.single.setConfig
 
 /**
- * AJ Live Studio streaming engine.
+ * AJ Live Studio Stream Engine
  *
- * StreamPack 3.2.0 camera pipeline:
+ * Current stage:
  *
  * Camera
  *   ↓
- * cameraSingleStreamer()
+ * StreamPack 3.2.0 SingleStreamer
  *   ↓
- * VideoConfig / AudioConfig
+ * Video + Audio encoder
  *   ↓
  * RTMP
  *   ↓
  * YouTube
  *
  * IMPORTANT:
- * The old ScreenStreamer implementation has intentionally
- * been removed because ScreenStreamer is not part of the
- * StreamPack 3.2.0 API.
+ * ScreenStreamer has intentionally been removed.
+ *
+ * StreamPack 3.2.0 does not expose the old:
+ *
+ * io.github.thibaultbee.streampack.streamers.ScreenStreamer
+ *
+ * API.
+ *
+ * Overlay compositing will be connected to the StreamPack
+ * SurfaceProcessor in the next stage.
  */
 class StreamEngine(
     private val context: Context
@@ -43,7 +50,7 @@ class StreamEngine(
     private var videoConfig: VideoConfig? = null
 
     /**
-     * Prepare the audio/video configuration.
+     * Configure the streamer.
      */
     fun initialize(config: EngineVideoConfig) {
 
@@ -64,70 +71,73 @@ class StreamEngine(
     }
 
     /**
-     * Start camera live streaming.
+     * Starts the camera RTMP stream.
      *
-     * mediaProjectionIntent is retained in the method signature so
-     * the existing CameraViewModel / UI does not need to change yet.
+     * mediaProjectionIntent is kept in the method signature
+     * temporarily so the existing CameraPreviewScreen does not
+     * need to be changed yet.
      *
-     * It is intentionally NOT used here.
-     *
-     * The current streaming stage is camera → StreamPack → RTMP.
-     * The overlay compositor will be connected to the video
-     * processing surface in the next stage.
+     * It is NOT used by the current camera streamer.
      */
     suspend fun goLive(
         rtmpUrl: String,
-        mediaProjectionIntent: android.content.Intent? = null
+        mediaProjectionIntent: Intent? = null
     ) {
 
-        // Always clean up an old streamer before creating a new one.
-        runCatching {
-            streamer?.stopStream()
-        }
+        // Stop and release any previous streamer.
+        streamer?.let { oldStreamer ->
 
-        runCatching {
-            streamer?.close()
-        }
+            runCatching {
+                oldStreamer.stopStream()
+            }
 
-        runCatching {
-            streamer?.release()
+            runCatching {
+                oldStreamer.close()
+            }
+
+            runCatching {
+                oldStreamer.release()
+            }
         }
 
         streamer = null
 
         /*
-         * StreamPack 3.2.0 official camera factory.
-         *
-         * This creates the complete camera streaming pipeline.
+         * StreamPack 3.2.0 official camera streamer.
          */
         val newStreamer = cameraSingleStreamer(
             context = context
         )
 
-        /*
-         * Apply audio configuration.
-         */
-        audioConfig?.let { config ->
-            newStreamer.setAudioConfig(config)
-        }
+        val audio = audioConfig
+        val video = videoConfig
 
         /*
-         * Apply video configuration.
+         * StreamPack 3.2.0 requires the combined
+         * audio/video configuration through setConfig().
          */
-        videoConfig?.let { config ->
-            newStreamer.setVideoConfig(config)
+        if (audio != null && video != null) {
+            newStreamer.setConfig(
+                audioConfig = audio,
+                videoConfig = video
+            )
+        } else {
+            throw IllegalStateException(
+                "StreamEngine is not initialized. " +
+                    "Call initialize() before goLive()."
+            )
         }
 
         streamer = newStreamer
 
         /*
-         * Start RTMP/RTMPS stream.
+         * Open RTMP endpoint and start streaming.
          */
         newStreamer.startStream(rtmpUrl)
     }
 
     /**
-     * Stop the current live stream and release StreamPack.
+     * Stops the current stream.
      */
     suspend fun stopLive() {
 
@@ -148,7 +158,6 @@ class StreamEngine(
         streamer = null
     }
 }
-
 
 /**
  * Video configuration used by AJ Live Studio.
