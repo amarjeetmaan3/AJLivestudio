@@ -8,33 +8,35 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import com.amarjeetmaan.ajlivestudio.ui.overlay.OverlayItem
 import com.amarjeetmaan.ajlivestudio.ui.overlay.OverlayType
+import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Renders the current overlay items onto one ARGB Bitmap at video
- * resolution, mirroring OverlayLayer's Compose drawing (same fonts,
- * same box colors) as closely as Canvas allows, so what's baked into
- * the stream matches what's shown in the Studio editor.
- *
- * item.x / item.y are pixel offsets in the on-screen overlay box's own
- * coordinate space (set by OverlayLayer's drag gestures), which is
- * usually a different pixel size than the video resolution — so this
- * takes the on-screen container size and scales proportionally into
- * video-resolution coordinates. It assumes the overlay box and the
- * video frame share the same top-left origin and aspect ratio; if the
- * preview is letterboxed, positions near the edges may drift slightly
- * versus the editor — a known simplification, not a silent bug.
- *
- * NOTE (known limitation, disclosed, not silently dropped): WEB overlay
- * items are NOT baked in here — a WEB item is a live WebView, and
- * capturing WebView pixels into a Bitmap needs a separate render pass
- * (PixelCopy) that isn't wired up yet. WEB items still show in the
- * in-app editor but won't reach the viewer until that's added.
+ * Renders all overlay items onto an ARGB Bitmap, now including live Web Overlays.
+ * Web Overlays are natively captured off-screen and synced with the GL compositor.
  */
 object OverlayRenderer {
 
     private val logoCache = HashMap<String, Bitmap>()
+    
+    // Web Overlay Background Capture System
+    private val webViews = ConcurrentHashMap<String, WebView>()
+    private val webBitmaps = ConcurrentHashMap<String, Bitmap>()
+    private val mainHandler = Handler(Looper.getMainLooper())
+    @Volatile private var isWebLoopRunning = false
+    
+    // State cache to trigger auto-renders for web animations
+    private var lastContext: Context? = null
+    private var lastItems: List<OverlayItem> = emptyList()
+    private var lastVideoWidth = 0
+    private var lastVideoHeight = 0
+    private var lastContainerW = 0
+    private var lastContainerH = 0
 
     fun render(
         context: Context,
@@ -44,7 +46,17 @@ object OverlayRenderer {
         videoWidth: Int,
         videoHeight: Int
     ): Bitmap? {
-        if (items.isEmpty() || containerWidthPx <= 0 || containerHeightPx <= 0) return null
+        lastContext = context
+        lastItems = items
+        lastContainerW = containerWidthPx
+        lastContainerH = containerHeightPx
+        lastVideoWidth = videoWidth
+        lastVideoHeight = videoHeight
+
+        if (items.isEmpty() || containerWidthPx <= 0 || containerHeightPx <= 0) {
+            isWebLoopRunning = false
+            return null
+        }
 
         val scaleX = videoWidth.toFloat() / containerWidthPx
         val scaleY = videoHeight.toFloat() / containerHeightPx
@@ -55,6 +67,8 @@ object OverlayRenderer {
         val bitmap = Bitmap.createBitmap(videoWidth, videoHeight, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
 
+        var hasWeb = false
+
         for (item in items) {
             val x = item.x * scaleX
             val y = item.y * scaleY
@@ -63,9 +77,20 @@ object OverlayRenderer {
                 OverlayType.TEXT -> drawText(canvas, item, x, y, itemScale, scaledDensity)
                 OverlayType.LOWER_THIRD -> drawLowerThird(canvas, item, x, y, itemScale, density, scaledDensity)
                 OverlayType.LOGO -> drawLogo(context, canvas, item, x, y, itemScale, density)
-                OverlayType.WEB -> { /* not baked yet, see class doc */ }
+                OverlayType.WEB -> {
+                    hasWeb = true
+                    drawWeb(context, canvas, item, x, y, itemScale, density, videoWidth, videoHeight)
+                }
             }
         }
+
+        if (hasWeb && !isWebLoopRunning) {
+            isWebLoopRunning = true
+            startWebCaptureLoop()
+        } else if (!hasWeb) {
+            isWebLoopRunning = false
+        }
+
         return bitmap
     }
 
@@ -121,7 +146,7 @@ object OverlayRenderer {
 
         val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.BLUE
-            alpha = 204 // ~0.8 opacity, matching Compose
+            alpha = 204
         }
         canvas.drawRect(
             RectF(x, y, x + contentWidth + padding * 2, y + contentHeight + padding * 2),
@@ -137,8 +162,76 @@ object OverlayRenderer {
             context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
                 ?: return
         }
-        val size = 100f * density * scale // matches OverlayLayer's 100.dp box
+        val size = 100f * density * scale
         val dest = RectF(x, y, x + size, y + size)
         canvas.drawBitmap(bitmap, null, dest, Paint(Paint.ANTI_ALIAS_FLAG))
+    }
+
+    private fun drawWeb(context: Context, canvas: Canvas, item: OverlayItem, x: Float, y: Float, scale: Float, density: Float, vW: Int, vH: Int) {
+        val url = item.content
+        val targetWidth = (400f * density * scale).toInt().coerceAtLeast(100)
+        val targetHeight = (300f * density * scale).toInt().coerceAtLeast(100)
+
+        if (!webViews.containsKey(url)) {
+            webViews[url] = null // Init placeholder
+            mainHandler.post {
+                val webView = WebView(context).apply {
+                    settings.javaScriptEnabled = true
+                    settings.domStorageEnabled = true
+                    settings.mediaPlaybackRequiresUserGesture = false
+                    setBackgroundColor(Color.TRANSPARENT)
+                    webViewClient = WebViewClient()
+                    // Fixed resolution layout to ensure widgets render correctly
+                    layout(0, 0, 1280, 720)
+                    loadUrl(url)
+                }
+                webViews[url] = webView
+            }
+        }
+
+        // Draw the latest captured bitmap from the background task
+        val bmp = webBitmaps[url]
+        if (bmp != null && !bmp.isRecycled) {
+            val dest = RectF(x, y, x + targetWidth, y + targetHeight)
+            canvas.drawBitmap(bmp, null, dest, Paint(Paint.ANTI_ALIAS_FLAG))
+        }
+    }
+
+    private fun startWebCaptureLoop() {
+        mainHandler.postDelayed(object : Runnable {
+            override fun run() {
+                if (!isWebLoopRunning) return
+                var capturedAny = false
+
+                for ((url, view) in webViews) {
+                    if (view == null || view.width <= 0 || view.height <= 0) continue
+                    try {
+                        var bmp = webBitmaps[url]
+                        if (bmp == null || bmp.width != view.width || bmp.height != view.height) {
+                            bmp = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
+                            webBitmaps[url] = bmp
+                        }
+                        bmp.eraseColor(Color.TRANSPARENT)
+                        val vCanvas = Canvas(bmp)
+                        view.draw(vCanvas)
+                        capturedAny = true
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+
+                if (capturedAny) {
+                    val ctx = lastContext
+                    if (ctx != null) {
+                        val nextBitmap = render(ctx, lastItems, lastContainerW, lastContainerH, lastVideoWidth, lastVideoHeight)
+                        com.amarjeetmaan.ajlivestudio.streaming.OverlayCompositor.Factory.instance?.setOverlayBitmap(nextBitmap)
+                    }
+                }
+
+                if (isWebLoopRunning) {
+                    mainHandler.postDelayed(this, 100) // ~10 FPS background capture for smooth widget animations
+                }
+            }
+        }, 100)
     }
 }
