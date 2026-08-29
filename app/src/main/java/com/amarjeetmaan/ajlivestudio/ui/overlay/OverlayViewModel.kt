@@ -9,7 +9,9 @@ class OverlayViewModel : ViewModel() {
     var webReloadTick = 0
 
     fun addText(text: String) {
-        if (text.isNotBlank()) items.add(OverlayItem(id = System.currentTimeMillis().toString(), type = OverlayType.TEXT, content = text))
+        if (text.isNotBlank()) {
+            items.add(OverlayItem(id = System.currentTimeMillis().toString(), type = OverlayType.TEXT, content = text))
+        }
     }
 
     fun addLogo(uri: Uri) {
@@ -21,7 +23,9 @@ class OverlayViewModel : ViewModel() {
     }
 
     fun addWeb(url: String) {
-        if (url.isNotBlank()) items.add(OverlayItem(id = System.currentTimeMillis().toString(), type = OverlayType.WEB, content = url))
+        if (url.isNotBlank()) {
+            items.add(OverlayItem(id = System.currentTimeMillis().toString(), type = OverlayType.WEB, content = url))
+        }
     }
 
     fun remove(id: String) {
@@ -32,12 +36,6 @@ class OverlayViewModel : ViewModel() {
         val index = items.indexOfFirst { it.id == id }
         if (index != -1) {
             items[index] = items[index].copy(x = x, y = y, scale = scale)
-        }
-    }
-}        val index = items.indexOfFirst { it.id == id }
-        if (index != -1) {
-            val item = items[index]
-            items[index] = item.copy(x = x, y = y, scale = scale)
         }
     }
 }
