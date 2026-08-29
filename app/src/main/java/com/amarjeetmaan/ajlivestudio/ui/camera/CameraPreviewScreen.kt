@@ -73,7 +73,6 @@ fun CameraPreviewScreen(
         )
     }
 
-    // Live Stream Back Button Protection
     BackHandler(enabled = uiState.streamState == StreamState.LIVE) {
         showExitDialog = true
     }
@@ -157,11 +156,12 @@ fun CameraPreviewScreen(
             }
         }
 
+        // यहाँ onDrag को onTransform से रिप्लेस किया गया है
         OverlayLayer(
             items = overlayViewModel.items,
             editable = true,
             webReloadTick = overlayViewModel.webReloadTick,
-            onDrag = { id, x, y -> overlayViewModel.updatePosition(id, x, y) }
+            onTransform = { id, x, y, scale -> overlayViewModel.updateTransform(id, x, y, scale) }
         )
 
         Column(
