@@ -4,9 +4,10 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import androidx.core.app.NotificationCompat
+import io.github.thibaultbee.streampack.core.streamers.single.SingleStreamer
 import io.github.thibaultbee.streampack.services.MediaProjectionService
 
-class ScreenShareService : MediaProjectionService() {
+class ScreenShareService : MediaProjectionService<SingleStreamer>() {
     override fun createNotification(): Notification {
         val channelId = "screen_share_channel"
         val manager = getSystemService(NotificationManager::class.java)
