@@ -25,7 +25,6 @@ fun OverlayPanel(viewModel: OverlayViewModel, onDismiss: () -> Unit) {
             Text("Overlays Manager", style = MaterialTheme.typography.titleLarge)
             Spacer(modifier = Modifier.height(16.dp))
             
-            // Text Option
             Row(modifier = Modifier.fillMaxWidth()) {
                 OutlinedTextField(
                     value = textInput,
@@ -38,7 +37,6 @@ fun OverlayPanel(viewModel: OverlayViewModel, onDismiss: () -> Unit) {
             }
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Lower Third Option
             Text("Lower Third", style = MaterialTheme.typography.labelLarge)
             Row(modifier = Modifier.fillMaxWidth()) {
                 OutlinedTextField(
@@ -67,11 +65,9 @@ fun OverlayPanel(viewModel: OverlayViewModel, onDismiss: () -> Unit) {
             ) { Text("Add Lower Third") }
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Logo Option
             Button(onClick = { logoPicker.launch("image/*") }, modifier = Modifier.fillMaxWidth()) { Text("Pick Logo from Gallery") }
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Web Option
             Row(modifier = Modifier.fillMaxWidth()) {
                 OutlinedTextField(
                     value = webUrlInput,
@@ -84,70 +80,6 @@ fun OverlayPanel(viewModel: OverlayViewModel, onDismiss: () -> Unit) {
             }
             Spacer(modifier = Modifier.height(24.dp))
 
-            // Active List
-            Text("Active Overlays", style = MaterialTheme.typography.titleMedium)
-            viewModel.items.forEach { item ->
-                Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-                    Text("${item.type.name} Overlay", modifier = Modifier.padding(vertical = 8.dp))
-                    TextButton(onClick = { viewModel.remove(item.id) }) { Text("Remove", color = MaterialTheme.colorScheme.error) }
-                }
-            }
-            Spacer(modifier = Modifier.height(32.dp))
-        }
-    }
-}                Button(onClick = { viewModel.addText(textInput); textInput = "" }) { Text("Add") }
-            }
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // Add Lower Third (RESTORED)
-            Text("Lower Third", style = MaterialTheme.typography.labelLarge)
-            Row(modifier = Modifier.fillMaxWidth()) {
-                OutlinedTextField(
-                    value = lowerThirdName,
-                    onValueChange = { lowerThirdName = it },
-                    label = { Text("Name") },
-                    modifier = Modifier.weight(1f)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                OutlinedTextField(
-                    value = lowerThirdTitle,
-                    onValueChange = { lowerThirdTitle = it },
-                    label = { Text("Title") },
-                    modifier = Modifier.weight(1f)
-                )
-            }
-            Button(
-                onClick = { 
-                    if(lowerThirdName.isNotBlank()) {
-                        viewModel.addLowerThird(lowerThirdName, lowerThirdTitle)
-                        lowerThirdName = ""
-                        lowerThirdTitle = ""
-                    }
-                }, 
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
-            ) {
-                Text("Add Lower Third")
-            }
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // Add Logo
-            Button(onClick = { logoPicker.launch("image/*") }, modifier = Modifier.fillMaxWidth()) { Text("Pick Logo from Gallery") }
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // Add Web Widget
-            Row(modifier = Modifier.fillMaxWidth()) {
-                OutlinedTextField(
-                    value = webUrlInput,
-                    onValueChange = { webUrlInput = it },
-                    label = { Text("Web URL") },
-                    modifier = Modifier.weight(1f)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Button(onClick = { viewModel.addWeb(webUrlInput); webUrlInput = "https://" }) { Text("Add") }
-            }
-            Spacer(modifier = Modifier.height(24.dp))
-
-            // Active Overlays List
             Text("Active Overlays", style = MaterialTheme.typography.titleMedium)
             viewModel.items.forEach { item ->
                 Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
