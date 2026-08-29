@@ -3,6 +3,8 @@ package com.amarjeetmaan.ajlivestudio.ui.camera
 import android.app.Activity
 import android.content.pm.ActivityInfo
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -14,7 +16,6 @@ import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
-import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -39,6 +40,7 @@ import com.amarjeetmaan.ajlivestudio.ui.theme.CrimsonBright
 import com.amarjeetmaan.ajlivestudio.ui.theme.GoldPrimary
 import com.amarjeetmaan.ajlivestudio.ui.theme.LiveGreen
 import com.amarjeetmaan.ajlivestudio.ui.theme.NavyDeep
+import io.github.thibaultbee.streampack.services.MediaProjectionUtils
 
 @Composable
 fun CameraPreviewScreen(
@@ -54,10 +56,16 @@ fun CameraPreviewScreen(
     var showOverlayPanel by remember { mutableStateOf(false) }
     var showAudioMixer by remember { mutableStateOf(false) }
     var showExitDialog by remember { mutableStateOf(false) }
-
-    BackHandler(enabled = uiState.streamState == StreamState.LIVE) {
-        showExitDialog = true
+    
+    val screenSharePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK && result.data != null) {
+            viewModel.startScreenLive(context, result.resultCode, result.data!!, rtmpConfig.fullUrl())
+        }
     }
+
+    BackHandler(enabled = uiState.streamState == StreamState.LIVE) { showExitDialog = true }
 
     if (showExitDialog) {
         AlertDialog(
@@ -65,7 +73,7 @@ fun CameraPreviewScreen(
             title = { Text("Stop Live Stream?", color = Color.Black) },
             text = { Text("Are you sure you want to end the current live broadcast?", color = Color.DarkGray) },
             confirmButton = {
-                TextButton(onClick = { showExitDialog = false; viewModel.stopLive(); onBack() }) { 
+                TextButton(onClick = { showExitDialog = false; viewModel.stopLive(context); onBack() }) { 
                     Text("End Stream", color = CrimsonBright, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold) 
                 }
             },
@@ -90,7 +98,6 @@ fun CameraPreviewScreen(
         if (uiState.cameraReady) {
             val previewRatio = if (isLandscape) 16f / 9f else 9f / 16f
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                // SurfaceView को aspectRatio के साथ रखा गया है ताकि स्ट्रेचिंग न हो
                 Box(modifier = Modifier.fillMaxWidth().aspectRatio(previewRatio).background(Color.Black)) {
                     AndroidView(
                         modifier = Modifier.fillMaxSize(),
@@ -129,7 +136,6 @@ fun CameraPreviewScreen(
 
         Column(modifier = Modifier.fillMaxWidth().align(Alignment.BottomCenter).background(NavyDeep.copy(alpha = 0.8f)).padding(bottom = 16.dp, top = 10.dp)) {
             Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-                // Flip बटन अब लाइव स्ट्रीम के दौरान भी इनेबल रहेगा
                 ControlIcon(icon = Icons.Filled.Cameraswitch, label = "Flip", enabled = true, onClick = { viewModel.flip() })
                 ControlIcon(icon = if (uiState.isTorchOn) Icons.Filled.FlashOn else Icons.Filled.FlashOff, label = "Torch", tint = if (uiState.isTorchOn) GoldPrimary else Color.White, enabled = uiState.isTorchAvailable, onClick = { viewModel.toggleTorch() })
                 ControlIcon(icon = if (uiState.isMicMuted) Icons.Filled.MicOff else Icons.Filled.Mic, label = "Mic", tint = if (uiState.isMicMuted) CrimsonBright else Color.White, onClick = { viewModel.toggleMic(context) })
@@ -140,8 +146,15 @@ fun CameraPreviewScreen(
 
             Button(
                 onClick = {
-                    if (uiState.streamState == StreamState.LIVE) showExitDialog = true
-                    else viewModel.goLive(rtmpConfig.fullUrl())
+                    if (uiState.streamState == StreamState.LIVE) {
+                        showExitDialog = true
+                    } else {
+                        try {
+                            screenSharePermissionLauncher.launch(MediaProjectionUtils.createScreenCaptureIntent(context))
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                        }
+                    }
                 },
                 enabled = uiState.cameraReady && uiState.streamState != StreamState.CONNECTING,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).height(52.dp),
@@ -154,7 +167,6 @@ fun CameraPreviewScreen(
     }
 
     if (showOverlayPanel) OverlayPanel(viewModel = overlayViewModel, onDismiss = { showOverlayPanel = false })
-    if (showAudioMixer) AudioMixerSheet(uiState = uiState, onGainChange = { viewModel.setMicGain(it) }, onMusicVolumeChange = { viewModel.setMusicVolume(it) }, onConnectBluetooth = { viewModel.connectBluetoothMic() }, onDismiss = { showAudioMixer = false })
 }
 
 @Composable
