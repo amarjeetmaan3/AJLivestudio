@@ -13,6 +13,8 @@ import androidx.compose.ui.unit.dp
 fun OverlayPanel(viewModel: OverlayViewModel, onDismiss: () -> Unit) {
     var textInput by remember { mutableStateOf("") }
     var webUrlInput by remember { mutableStateOf("https://") }
+    var lowerThirdName by remember { mutableStateOf("") }
+    var lowerThirdTitle by remember { mutableStateOf("") }
     
     val logoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         uri?.let { viewModel.addLogo(it) }
@@ -28,13 +30,44 @@ fun OverlayPanel(viewModel: OverlayViewModel, onDismiss: () -> Unit) {
                 OutlinedTextField(
                     value = textInput,
                     onValueChange = { textInput = it },
-                    label = { Text("Enter Text Overlay") },
+                    label = { Text("Enter Text") },
                     modifier = Modifier.weight(1f)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Button(onClick = { viewModel.addText(textInput); textInput = "" }) {
                     Text("Add")
                 }
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Add Lower Third
+            Text("Lower Third", style = MaterialTheme.typography.labelLarge)
+            Row(modifier = Modifier.fillMaxWidth()) {
+                OutlinedTextField(
+                    value = lowerThirdName,
+                    onValueChange = { lowerThirdName = it },
+                    label = { Text("Name") },
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                OutlinedTextField(
+                    value = lowerThirdTitle,
+                    onValueChange = { lowerThirdTitle = it },
+                    label = { Text("Title") },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            Button(
+                onClick = { 
+                    if(lowerThirdName.isNotBlank()) {
+                        viewModel.addLowerThird(lowerThirdName, lowerThirdTitle)
+                        lowerThirdName = ""
+                        lowerThirdTitle = ""
+                    }
+                }, 
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+            ) {
+                Text("Add Lower Third")
             }
             Spacer(modifier = Modifier.height(16.dp))
 
@@ -49,7 +82,7 @@ fun OverlayPanel(viewModel: OverlayViewModel, onDismiss: () -> Unit) {
                 OutlinedTextField(
                     value = webUrlInput,
                     onValueChange = { webUrlInput = it },
-                    label = { Text("Web URL (Alerts/Chat)") },
+                    label = { Text("Web URL") },
                     modifier = Modifier.weight(1f)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
