@@ -1,6 +1,7 @@
 package com.amarjeetmaan.ajlivestudio.ui.camera
 
 import android.content.Context
+import android.content.Intent
 import android.view.Surface
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -12,6 +13,7 @@ import com.amarjeetmaan.ajlivestudio.streaming.EngineVideoConfig
 import com.amarjeetmaan.ajlivestudio.streaming.StreamEngine
 import com.amarjeetmaan.ajlivestudio.ui.setup.BitratePreset
 import com.amarjeetmaan.ajlivestudio.ui.setup.StudioSetupState
+import io.github.thibaultbee.streampack.services.MediaProjectionService
 import kotlinx.coroutines.launch
 
 class CameraViewModel : ViewModel() {
@@ -21,8 +23,10 @@ class CameraViewModel : ViewModel() {
     private var engine: StreamEngine? = null
     private var audioController: AudioController? = null
     private var activePreviewSurface: Surface? = null
+    private var currentSetupState: StudioSetupState? = null
 
     fun initialize(context: Context, setupState: StudioSetupState) {
+        currentSetupState = setupState
         engine = StreamEngine(context)
         audioController = AudioController(context)
         uiState = uiState.copy(isMicMuted = audioController?.isMicMuted() ?: false)
@@ -34,7 +38,106 @@ class CameraViewModel : ViewModel() {
 
         viewModelScope.launch {
             runCatching {
-                engine?.initialize(
+                engine?.initializeCamera(
+                    EngineVideoConfig(
+                        width = setupState.resolution.width,
+                        height = setupState.resolution.height,
+                        fps = setupState.frameRate.value,
+                        bitrateBps = resolveBitrateBps(setupState.bitrate, setupState.resolution.width)
+                    ),
+                    targetRotation = targetRotation
+                )
+            }.onSuccess {
+                uiState = uiState.copy(
+                    cameraReady = true,
+                    isTorchAvailable = engine?.isTorchAvailable() ?: false
+                )
+            }
+        }
+    }
+
+    fun startPreview(surface: Surface) {
+        activePreviewSurface = surface
+        viewModelScope.launch { engine?.startCameraPreview(surface) }
+    }
+
+    fun stopPreview() {
+        activePreviewSurface = null
+        viewModelScope.launch { engine?.stopCameraPreview() }
+    }
+
+    fun startScreenLive(context: Context, resultCode: Int, data: Intent, rtmpUrl: String) {
+        uiState = uiState.copy(streamState = StreamState.CONNECTING, errorMessage = null)
+        try {
+            MediaProjectionService.bindService(
+                context,
+                com.amarjeetmaan.ajlivestudio.screenshare.ScreenShareService::class.java,
+                resultCode,
+                data
+            ) { streamer ->
+                viewModelScope.launch {
+                    try {
+                        val state = currentSetupState ?: return@launch
+                        val videoConfig = EngineVideoConfig(
+                            width = state.resolution.width,
+                            height = state.resolution.height,
+                            fps = state.frameRate.value,
+                            bitrateBps = resolveBitrateBps(state.bitrate, state.resolution.width)
+                        )
+                        engine?.attachAndStartScreenStreamer(streamer, videoConfig, rtmpUrl)
+                        uiState = uiState.copy(streamState = StreamState.LIVE)
+                    } catch (e: Exception) {
+                        uiState = uiState.copy(streamState = StreamState.ERROR, errorMessage = e.message)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            uiState = uiState.copy(streamState = StreamState.ERROR, errorMessage = e.message)
+        }
+    }
+
+    fun stopLive(context: Context) {
+        viewModelScope.launch {
+            runCatching { engine?.stopLive() }
+            uiState = uiState.copy(streamState = StreamState.IDLE)
+            context.stopService(Intent(context, com.amarjeetmaan.ajlivestudio.screenshare.ScreenShareService::class.java))
+        }
+    }
+
+    fun flip() {
+        viewModelScope.launch {
+            runCatching { engine?.flipCamera() ?: false }
+                .onSuccess { nowFront ->
+                    uiState = uiState.copy(isFrontCamera = nowFront, isTorchOn = false, isTorchAvailable = engine?.isTorchAvailable() ?: false)
+                    activePreviewSurface?.let { engine?.startCameraPreview(it) }
+                }
+        }
+    }
+
+    fun toggleTorch() {
+        if (!uiState.isTorchAvailable) return
+        val newState = !uiState.isTorchOn
+        viewModelScope.launch {
+            runCatching { engine?.setTorch(newState) }
+                .onSuccess { uiState = uiState.copy(isTorchOn = newState) }
+        }
+    }
+
+    fun toggleMic(context: Context) {
+        val newMuted = !uiState.isMicMuted
+        uiState = uiState.copy(isMicMuted = newMuted)
+        audioController?.setMicMuted(newMuted)
+        try {
+            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+            audioManager.isMicrophoneMute = newMuted
+            engine?.muteAudio(newMuted)
+        } catch (e: Exception) { }
+    }
+
+    private fun resolveBitrateBps(preset: BitratePreset, widthHint: Int): Int {
+        return (preset.kbps ?: if (widthHint >= 1920) 5000 else 3000) * 1000
+    }
+}                engine?.initialize(
                     EngineVideoConfig(
                         width = setupState.resolution.width,
                         height = setupState.resolution.height,
