@@ -5,6 +5,7 @@ import android.content.pm.ActivityInfo
 import android.graphics.SurfaceTexture
 import android.view.Surface
 import android.view.TextureView
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -60,6 +61,7 @@ fun CameraPreviewScreen(
     var showWbMenu by remember { mutableStateOf(false) }
     var showOverlayPanel by remember { mutableStateOf(false) }
     var showAudioMixer by remember { mutableStateOf(false) }
+    var showExitDialog by remember { mutableStateOf(false) }
     
     val screenShareController = remember { ScreenShareController(context) }
     val screenSharePermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
@@ -68,6 +70,34 @@ fun CameraPreviewScreen(
         viewModel.onScreenSharePermissionResult(
             granted = screenShareController.isResultGranted(result.resultCode),
             data = result.data 
+        )
+    }
+
+    // Live Stream Back Button Protection
+    BackHandler(enabled = uiState.streamState == StreamState.LIVE) {
+        showExitDialog = true
+    }
+
+    if (showExitDialog) {
+        AlertDialog(
+            onDismissRequest = { showExitDialog = false },
+            title = { Text("Stop Live Stream?", color = Color.Black) },
+            text = { Text("Are you sure you want to end the current live broadcast?", color = Color.DarkGray) },
+            confirmButton = {
+                TextButton(onClick = {
+                    showExitDialog = false
+                    viewModel.stopLive()
+                    onBack()
+                }) { 
+                    Text("End Stream", color = CrimsonBright, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold) 
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showExitDialog = false }) { 
+                    Text("Cancel", color = Color.Gray) 
+                }
+            },
+            containerColor = Color.White
         )
     }
 
@@ -297,7 +327,7 @@ fun CameraPreviewScreen(
             Button(
                 onClick = {
                     if (uiState.streamState == StreamState.LIVE) {
-                        viewModel.stopLive()
+                        showExitDialog = true
                     } else {
                         viewModel.goLive(rtmpConfig.fullUrl())
                     }
