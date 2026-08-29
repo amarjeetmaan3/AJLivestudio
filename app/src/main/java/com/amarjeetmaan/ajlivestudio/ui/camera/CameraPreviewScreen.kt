@@ -59,16 +59,19 @@ fun CameraPreviewScreen(
         }
     }
 
-    val screenShareController = remember { ScreenShareController(context) }
-    val screenSharePermissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (screenShareController.isResultGranted(result.resultCode) && result.data != null) {
-            // Permission Granted -> START LIVE STREAM!
-            val mediaProjection = screenShareController.getMediaProjection(result.resultCode, result.data!!)
-            viewModel.goLive(rtmpConfig.fullUrl(), mediaProjection)
-        }
+   val screenSharePermissionLauncher = rememberLauncherForActivityResult(
+    ActivityResultContracts.StartActivityForResult()
+) { result ->
+    if (
+        screenShareController.isResultGranted(result.resultCode) &&
+        result.data != null
+    ) {
+        viewModel.goLive(
+            rtmpConfig.fullUrl(),
+            result.data!!
+        )
     }
+}
 
     BackHandler(enabled = uiState.streamState == StreamState.LIVE) { showExitDialog = true }
 
