@@ -2,169 +2,97 @@ package com.amarjeetmaan.ajlivestudio.streaming
 
 import android.content.Context
 import android.content.Intent
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
 import android.media.AudioFormat
 import android.util.Size
-
+import android.view.Surface
+import io.github.thibaultbee.streampack.core.elements.sources.video.camera.ICameraSource
+import io.github.thibaultbee.streampack.core.interfaces.setCameraId
+import io.github.thibaultbee.streampack.core.interfaces.startPreview
 import io.github.thibaultbee.streampack.core.interfaces.startStream
+import io.github.thibaultbee.streampack.core.interfaces.stopPreview
 import io.github.thibaultbee.streampack.core.streamers.single.AudioConfig
 import io.github.thibaultbee.streampack.core.streamers.single.SingleStreamer
 import io.github.thibaultbee.streampack.core.streamers.single.VideoConfig
 import io.github.thibaultbee.streampack.core.streamers.single.cameraSingleStreamer
 import io.github.thibaultbee.streampack.core.streamers.single.setConfig
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 
-/**
- * AJ Live Studio Stream Engine
- *
- * Current stage:
- *
- * Camera
- *   ↓
- * StreamPack 3.2.0 SingleStreamer
- *   ↓
- * Video + Audio encoder
- *   ↓
- * RTMP
- *   ↓
- * YouTube
- *
- * IMPORTANT:
- * ScreenStreamer has intentionally been removed.
- *
- * StreamPack 3.2.0 does not expose the old:
- *
- * io.github.thibaultbee.streampack.streamers.ScreenStreamer
- *
- * API.
- *
- * Overlay compositing will be connected to the StreamPack
- * SurfaceProcessor in the next stage.
- */
-class StreamEngine(
-    private val context: Context
-) {
-
+class StreamEngine(private val context: Context) {
     var streamer: SingleStreamer? = null
         private set
+    private var currentCameraId: String = ""
+    private var isFront: Boolean = false
 
-    private var audioConfig: AudioConfig? = null
-    private var videoConfig: VideoConfig? = null
+    suspend fun initialize(videoConfig: EngineVideoConfig, targetRotation: Int? = null) {
+        val cameraId = defaultBackCameraId() ?: throw IllegalStateException("No camera found")
+        currentCameraId = cameraId
+        isFront = false
 
-    /**
-     * Configure the streamer.
-     */
-    fun initialize(config: EngineVideoConfig) {
-
-        audioConfig = AudioConfig(
-            startBitrate = 128_000,
-            sampleRate = 44_100,
-            channelConfig = AudioFormat.CHANNEL_IN_STEREO
-        )
-
-        videoConfig = VideoConfig(
-            startBitrate = config.bitrateBps,
-            resolution = Size(
-                config.width,
-                config.height
-            ),
-            fps = config.fps
-        )
-    }
-
-    /**
-     * Starts the camera RTMP stream.
-     *
-     * mediaProjectionIntent is kept in the method signature
-     * temporarily so the existing CameraPreviewScreen does not
-     * need to be changed yet.
-     *
-     * It is NOT used by the current camera streamer.
-     */
-    suspend fun goLive(
-        rtmpUrl: String,
-        mediaProjectionIntent: Intent? = null
-    ) {
-
-        // Stop and release any previous streamer.
-        streamer?.let { oldStreamer ->
-
-            runCatching {
-                oldStreamer.stopStream()
-            }
-
-            runCatching {
-                oldStreamer.close()
-            }
-
-            runCatching {
-                oldStreamer.release()
-            }
-        }
-
-        streamer = null
-
-        /*
-         * StreamPack 3.2.0 official camera streamer.
-         */
-        val newStreamer = cameraSingleStreamer(
-            context = context
-        )
-
-        val audio = audioConfig
-        val video = videoConfig
-
-        /*
-         * StreamPack 3.2.0 requires the combined
-         * audio/video configuration through setConfig().
-         */
-        if (audio != null && video != null) {
-            newStreamer.setConfig(
-                audioConfig = audio,
-                videoConfig = video
-            )
-        } else {
-            throw IllegalStateException(
-                "StreamEngine is not initialized. " +
-                    "Call initialize() before goLive()."
-            )
-        }
-
+        val newStreamer = cameraSingleStreamer(context = context, cameraId = cameraId)
         streamer = newStreamer
 
-        /*
-         * Open RTMP endpoint and start streaming.
-         */
-        newStreamer.startStream(rtmpUrl)
+        val audioConfig = AudioConfig(startBitrate = 128_000, sampleRate = 44_100, channelConfig = AudioFormat.CHANNEL_IN_STEREO)
+        val streamPackVideoConfig = VideoConfig(startBitrate = videoConfig.bitrateBps, resolution = Size(videoConfig.width, videoConfig.height), fps = videoConfig.fps)
+        
+        newStreamer.setConfig(audioConfig, streamPackVideoConfig)
+        targetRotation?.let { runCatching { newStreamer.setTargetRotation(it) } }
+
+        withTimeoutOrNull(5_000) { newStreamer.videoInput?.sourceFlow?.filterNotNull()?.first() }
     }
 
-    /**
-     * Stops the current stream.
-     */
+    suspend fun startCameraPreview(surface: Surface) {
+        try { streamer?.startPreview(surface) } catch (e: Exception) { e.printStackTrace() }
+    }
+
+    suspend fun stopCameraPreview() { streamer?.stopPreview() }
+    suspend fun goLive(rtmpUrl: String) { streamer?.startStream(rtmpUrl) }
+
     suspend fun stopLive() {
+        runCatching { streamer?.stopStream() }
+        runCatching { streamer?.close() }
+    }
 
-        val currentStreamer = streamer ?: return
-
-        runCatching {
-            currentStreamer.stopStream()
-        }
-
-        runCatching {
-            currentStreamer.close()
-        }
-
-        runCatching {
-            currentStreamer.release()
-        }
-
+    suspend fun release() {
+        stopLive()
+        streamer?.release()
         streamer = null
+    }
+
+    suspend fun flipCamera(): Boolean {
+        val s = streamer ?: return isFront
+        val nextId = if (isFront) defaultBackCameraId() else defaultFrontCameraId()
+        if (nextId == null) return isFront
+        s.setCameraId(nextId)
+        currentCameraId = nextId
+        isFront = !isFront
+        withTimeoutOrNull(5_000) { s.videoInput?.sourceFlow?.filterNotNull()?.first() }
+        return isFront
+    }
+
+    fun isFrontCamera(): Boolean = isFront
+    fun isTorchAvailable(): Boolean = cameraSource()?.settings?.flash?.isAvailable ?: false
+    suspend fun setTorch(enabled: Boolean) { cameraSource()?.settings?.flash?.setIsEnable(enabled) }
+    suspend fun setZoomRatio(ratio: Float) { cameraSource()?.settings?.zoom?.setZoomRatio(ratio) }
+    fun zoomRange(): ClosedFloatingPointRange<Float> {
+        val range = cameraSource()?.settings?.zoom?.availableRatioRange
+        return if (range != null) range.lower..range.upper else 1f..1f
+    }
+    suspend fun setExposureCompensation(index: Int) { cameraSource()?.settings?.exposure?.setCompensation(index) }
+    fun exposureRange(): IntRange {
+        val range = cameraSource()?.settings?.exposure?.availableCompensationRange
+        return if (range != null) range.lower..range.upper else 0..0
+    }
+    private fun cameraSource(): ICameraSource? = streamer?.videoInput?.sourceFlow?.value as? ICameraSource
+    private fun defaultBackCameraId(): String? = findCameraId(CameraCharacteristics.LENS_FACING_BACK)
+    private fun defaultFrontCameraId(): String? = findCameraId(CameraCharacteristics.LENS_FACING_FRONT)
+    private fun findCameraId(facing: Int): String? {
+        val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        return manager.cameraIdList.firstOrNull { id -> manager.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING) == facing }
     }
 }
 
-/**
- * Video configuration used by AJ Live Studio.
- */
-data class EngineVideoConfig(
-    val width: Int,
-    val height: Int,
-    val fps: Int,
-    val bitrateBps: Int
-)
+data class EngineVideoConfig(val width: Int, val height: Int, val fps: Int, val bitrateBps: Int)
