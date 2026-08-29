@@ -2,7 +2,6 @@ package com.amarjeetmaan.ajlivestudio.streaming
 
 import android.content.Context
 import android.content.Intent
-import android.graphics.Bitmap
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.media.AudioFormat
@@ -14,11 +13,10 @@ import io.github.thibaultbee.streampack.core.interfaces.startPreview
 import io.github.thibaultbee.streampack.core.interfaces.startStream
 import io.github.thibaultbee.streampack.core.interfaces.stopPreview
 import io.github.thibaultbee.streampack.core.streamers.single.AudioConfig
+import io.github.thibaultbee.streampack.core.streamers.single.SingleStreamer
 import io.github.thibaultbee.streampack.core.streamers.single.VideoConfig
+import io.github.thibaultbee.streampack.core.streamers.single.cameraSingleStreamer
 import io.github.thibaultbee.streampack.core.streamers.single.setConfig
-// NEW: GL Mixer Imports
-import io.github.thibaultbee.streampack.ext.gl.streamers.CameraGlStreamer
-import io.github.thibaultbee.streampack.ext.gl.streamers.cameraGlStreamer
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
@@ -26,8 +24,7 @@ import com.amarjeetmaan.ajlivestudio.screenshare.ScreenShareService
 
 class StreamEngine(private val context: Context) {
 
-    // SingleStreamer की जगह अब CameraGlStreamer (Mixer) का इस्तेमाल
-    var streamer: CameraGlStreamer? = null
+    var streamer: SingleStreamer? = null
         private set
 
     private var currentCameraId: String = ""
@@ -39,8 +36,7 @@ class StreamEngine(private val context: Context) {
         currentCameraId = cameraId
         isFront = false
 
-        // मैजिक: यहाँ cameraSingleStreamer की जगह cameraGlStreamer चालू कर रहे हैं
-        val newStreamer = cameraGlStreamer(context = context, cameraId = cameraId)
+        val newStreamer = cameraSingleStreamer(context = context, cameraId = cameraId)
         streamer = newStreamer
 
         val audioConfig = AudioConfig(
@@ -54,7 +50,7 @@ class StreamEngine(private val context: Context) {
             fps = videoConfig.fps,
         )
         newStreamer.setConfig(audioConfig, streamPackVideoConfig)
-        
+
         targetRotation?.let { rotation ->
             runCatching { newStreamer.setTargetRotation(rotation) }
         }
@@ -63,19 +59,6 @@ class StreamEngine(private val context: Context) {
             newStreamer.videoInput?.sourceFlow?.filterNotNull()?.first()
         }
     }
-
-    // --- OVERLAY MIXER FUNCTIONS ---
-    // ये फंक्शन्स OverlayViewModel से Bitmap लेकर सीधे कैमरे की स्ट्रीम में चिपकाएंगे
-    fun updateOverlayBitmap(id: String, bitmap: Bitmap, x: Float, y: Float) {
-        val s = streamer ?: return
-        // TODO: Next step - Use SurfaceManager to add the Bitmap onto the live video
-    }
-
-    fun removeOverlay(id: String) {
-        val s = streamer ?: return
-        // TODO: Remove the graphic from SurfaceManager
-    }
-    // -------------------------------
 
     suspend fun startCameraPreview(surface: Surface) {
         val s = streamer ?: return
@@ -94,7 +77,6 @@ class StreamEngine(private val context: Context) {
         screenShareIntent = intent
         val serviceIntent = Intent(context, ScreenShareService::class.java)
         context.startForegroundService(serviceIntent)
-        // Screen Share will remain strictly for apps/games
     }
 
     suspend fun stopScreenShare() {
@@ -126,7 +108,7 @@ class StreamEngine(private val context: Context) {
         s.setCameraId(nextId)
         currentCameraId = nextId
         isFront = !isFront
-        
+
         withTimeoutOrNull(5_000) {
             s.videoInput?.sourceFlow?.filterNotNull()?.first()
         }
