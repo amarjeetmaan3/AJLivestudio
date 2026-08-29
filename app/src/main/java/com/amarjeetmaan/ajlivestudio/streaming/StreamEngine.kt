@@ -2,6 +2,7 @@ package com.amarjeetmaan.ajlivestudio.streaming
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.media.AudioFormat
@@ -13,10 +14,11 @@ import io.github.thibaultbee.streampack.core.interfaces.startPreview
 import io.github.thibaultbee.streampack.core.interfaces.startStream
 import io.github.thibaultbee.streampack.core.interfaces.stopPreview
 import io.github.thibaultbee.streampack.core.streamers.single.AudioConfig
-import io.github.thibaultbee.streampack.core.streamers.single.SingleStreamer
 import io.github.thibaultbee.streampack.core.streamers.single.VideoConfig
-import io.github.thibaultbee.streampack.core.streamers.single.cameraSingleStreamer
 import io.github.thibaultbee.streampack.core.streamers.single.setConfig
+// NEW: GL Mixer Imports
+import io.github.thibaultbee.streampack.ext.gl.streamers.CameraGlStreamer
+import io.github.thibaultbee.streampack.ext.gl.streamers.cameraGlStreamer
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
@@ -24,12 +26,12 @@ import com.amarjeetmaan.ajlivestudio.screenshare.ScreenShareService
 
 class StreamEngine(private val context: Context) {
 
-    var streamer: SingleStreamer? = null
+    // SingleStreamer की जगह अब CameraGlStreamer (Mixer) का इस्तेमाल
+    var streamer: CameraGlStreamer? = null
         private set
 
     private var currentCameraId: String = ""
     private var isFront: Boolean = false
-    
     private var screenShareIntent: Intent? = null
 
     suspend fun initialize(videoConfig: EngineVideoConfig, targetRotation: Int? = null) {
@@ -37,7 +39,8 @@ class StreamEngine(private val context: Context) {
         currentCameraId = cameraId
         isFront = false
 
-        val newStreamer = cameraSingleStreamer(context = context, cameraId = cameraId)
+        // मैजिक: यहाँ cameraSingleStreamer की जगह cameraGlStreamer चालू कर रहे हैं
+        val newStreamer = cameraGlStreamer(context = context, cameraId = cameraId)
         streamer = newStreamer
 
         val audioConfig = AudioConfig(
@@ -61,6 +64,19 @@ class StreamEngine(private val context: Context) {
         }
     }
 
+    // --- OVERLAY MIXER FUNCTIONS ---
+    // ये फंक्शन्स OverlayViewModel से Bitmap लेकर सीधे कैमरे की स्ट्रीम में चिपकाएंगे
+    fun updateOverlayBitmap(id: String, bitmap: Bitmap, x: Float, y: Float) {
+        val s = streamer ?: return
+        // TODO: Next step - Use SurfaceManager to add the Bitmap onto the live video
+    }
+
+    fun removeOverlay(id: String) {
+        val s = streamer ?: return
+        // TODO: Remove the graphic from SurfaceManager
+    }
+    // -------------------------------
+
     suspend fun startCameraPreview(surface: Surface) {
         val s = streamer ?: return
         try {
@@ -74,22 +90,17 @@ class StreamEngine(private val context: Context) {
         streamer?.stopPreview()
     }
 
-    // --- SCREEN SHARE & OVERLAYS ---
     suspend fun startScreenShare(intent: Intent) {
         screenShareIntent = intent
-        // अनिवार्य: Android 14 में स्क्रीन रिकॉर्ड करने के लिए Foreground Service चालू करें
         val serviceIntent = Intent(context, ScreenShareService::class.java)
         context.startForegroundService(serviceIntent)
-        
-        // TODO: Next step we wire this intent directly into the StreamPack pipeline
+        // Screen Share will remain strictly for apps/games
     }
 
     suspend fun stopScreenShare() {
         screenShareIntent = null
-        val serviceIntent = Intent(context, ScreenShareService::class.java)
-        context.stopService(serviceIntent)
+        context.stopService(Intent(context, ScreenShareService::class.java))
     }
-    // -------------------------------
 
     suspend fun goLive(rtmpUrl: String) {
         val s = streamer ?: throw IllegalStateException("Streamer not initialized")
