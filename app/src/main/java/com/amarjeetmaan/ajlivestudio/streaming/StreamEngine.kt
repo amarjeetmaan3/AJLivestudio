@@ -8,8 +8,8 @@ import io.github.thibaultbee.streampack.core.interfaces.startStream
 import io.github.thibaultbee.streampack.core.streamers.single.AudioConfig
 import io.github.thibaultbee.streampack.core.streamers.single.SingleStreamer
 import io.github.thibaultbee.streampack.core.streamers.single.VideoConfig
-import io.github.thibaultbee.streampack.core.streamers.single.screenSingleStreamer
 import io.github.thibaultbee.streampack.core.streamers.single.setConfig
+import io.github.thibaultbee.streampack.streamers.ScreenStreamer
 import com.amarjeetmaan.ajlivestudio.screenshare.ScreenShareService
 
 class StreamEngine(private val context: Context) {
@@ -37,7 +37,8 @@ class StreamEngine(private val context: Context) {
         val serviceIntent = Intent(context, ScreenShareService::class.java)
         context.startForegroundService(serviceIntent)
         
-        val newStreamer = screenSingleStreamer(context, mediaProjectionIntent)
+        // Using the correct ScreenStreamer class for StreamPack 3.2.0
+        val newStreamer = ScreenStreamer(context, mediaProjectionIntent)
         audioConfig?.let { a -> videoConfig?.let { v -> newStreamer.setConfig(a, v) } }
         
         streamer = newStreamer
