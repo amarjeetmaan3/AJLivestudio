@@ -90,64 +90,6 @@ class StreamEngine(private val context: Context) {
         val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         return manager.cameraIdList.firstOrNull { id -> manager.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING) == facing }
     }
-}        val audioConfig = AudioConfig(startBitrate = 128_000, sampleRate = 44_100, channelConfig = AudioFormat.CHANNEL_IN_STEREO)
-        val streamPackVideoConfig = VideoConfig(startBitrate = videoConfig.bitrateBps, resolution = Size(videoConfig.width, videoConfig.height), fps = videoConfig.fps)
-        
-        newStreamer.setConfig(audioConfig, streamPackVideoConfig)
-        targetRotation?.let { runCatching { newStreamer.setTargetRotation(it) } }
-
-        withTimeoutOrNull(5_000) { newStreamer.videoInput?.sourceFlow?.filterNotNull()?.first() }
-    }
-
-    suspend fun startCameraPreview(surface: Surface) {
-        try { streamer?.startPreview(surface) } catch (e: Exception) { e.printStackTrace() }
-    }
-
-    suspend fun stopCameraPreview() { streamer?.stopPreview() }
-    suspend fun goLive(rtmpUrl: String) { streamer?.startStream(rtmpUrl) }
-
-    suspend fun stopLive() {
-        runCatching { streamer?.stopStream() }
-        runCatching { streamer?.close() }
-    }
-
-    suspend fun release() {
-        stopLive()
-        streamer?.release()
-        streamer = null
-    }
-
-    suspend fun flipCamera(): Boolean {
-        val s = streamer ?: return isFront
-        val nextId = if (isFront) defaultBackCameraId() else defaultFrontCameraId()
-        if (nextId == null) return isFront
-        s.setCameraId(nextId)
-        currentCameraId = nextId
-        isFront = !isFront
-        withTimeoutOrNull(5_000) { s.videoInput?.sourceFlow?.filterNotNull()?.first() }
-        return isFront
-    }
-
-    fun isFrontCamera(): Boolean = isFront
-    fun isTorchAvailable(): Boolean = cameraSource()?.settings?.flash?.isAvailable ?: false
-    suspend fun setTorch(enabled: Boolean) { cameraSource()?.settings?.flash?.setIsEnable(enabled) }
-    suspend fun setZoomRatio(ratio: Float) { cameraSource()?.settings?.zoom?.setZoomRatio(ratio) }
-    fun zoomRange(): ClosedFloatingPointRange<Float> {
-        val range = cameraSource()?.settings?.zoom?.availableRatioRange
-        return if (range != null) range.lower..range.upper else 1f..1f
-    }
-    suspend fun setExposureCompensation(index: Int) { cameraSource()?.settings?.exposure?.setCompensation(index) }
-    fun exposureRange(): IntRange {
-        val range = cameraSource()?.settings?.exposure?.availableCompensationRange
-        return if (range != null) range.lower..range.upper else 0..0
-    }
-    private fun cameraSource(): ICameraSource? = streamer?.videoInput?.sourceFlow?.value as? ICameraSource
-    private fun defaultBackCameraId(): String? = findCameraId(CameraCharacteristics.LENS_FACING_BACK)
-    private fun defaultFrontCameraId(): String? = findCameraId(CameraCharacteristics.LENS_FACING_FRONT)
-    private fun findCameraId(facing: Int): String? {
-        val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-        return manager.cameraIdList.firstOrNull { id -> manager.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING) == facing }
-    }
 }
 
 data class EngineVideoConfig(val width: Int, val height: Int, val fps: Int, val bitrateBps: Int)
