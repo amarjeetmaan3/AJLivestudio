@@ -2,439 +2,135 @@ package com.amarjeetmaan.ajlivestudio.ui.camera
 
 import android.content.Context
 import android.content.Intent
-
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.Preview
-import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.view.PreviewView
-
+import android.view.Surface
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-
-import androidx.core.content.ContextCompat
-
-import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-
 import com.amarjeetmaan.ajlivestudio.audio.AudioController
 import com.amarjeetmaan.ajlivestudio.streaming.EngineVideoConfig
 import com.amarjeetmaan.ajlivestudio.streaming.StreamEngine
 import com.amarjeetmaan.ajlivestudio.ui.setup.BitratePreset
 import com.amarjeetmaan.ajlivestudio.ui.setup.StudioSetupState
-
 import kotlinx.coroutines.launch
 
-import kotlin.coroutines.resume
-import kotlin.coroutines.suspendCoroutine
-
 class CameraViewModel : ViewModel() {
-
     var uiState by mutableStateOf(CameraUiState())
         private set
 
     private var engine: StreamEngine? = null
     private var audioController: AudioController? = null
+    private var activePreviewSurface: Surface? = null
 
-    private var cameraProvider: ProcessCameraProvider? = null
-
-    private var currentLensFacing =
-        CameraSelector.LENS_FACING_BACK
-
-    private var cameraControl:
-        androidx.camera.core.CameraControl? = null
-
-    private var cameraInfo:
-        androidx.camera.core.CameraInfo? = null
-
-
-    /**
-     * Initializes the streaming engine and audio controller.
-     */
-    fun initialize(
-        context: Context,
-        setupState: StudioSetupState
-    ) {
-
-        engine = StreamEngine(context).apply {
-
-            initialize(
-                EngineVideoConfig(
-                    width = setupState.resolution.width,
-
-                    height = setupState.resolution.height,
-
-                    fps = setupState.frameRate.value,
-
-                    bitrateBps = resolveBitrateBps(
-                        setupState.bitrate,
-                        setupState.resolution.width
-                    )
-                )
-            )
-        }
-
+    fun initialize(context: Context, setupState: StudioSetupState) {
+        engine = StreamEngine(context)
         audioController = AudioController(context)
+        uiState = uiState.copy(isMicMuted = audioController?.isMicMuted() ?: false)
 
-        uiState = uiState.copy(
-            isMicMuted =
-                audioController?.isMicMuted() ?: false
-        )
-    }
+        val targetRotation = when (setupState.orientation) {
+            com.amarjeetmaan.ajlivestudio.ui.setup.StreamOrientation.LANDSCAPE -> android.view.Surface.ROTATION_90
+            com.amarjeetmaan.ajlivestudio.ui.setup.StreamOrientation.PORTRAIT -> android.view.Surface.ROTATION_0
+        }
 
-
-    /**
-     * Starts the CameraX preview.
-     */
-    suspend fun startCameraX(
-        context: Context,
-        lifecycleOwner: LifecycleOwner,
-        previewView: PreviewView
-    ) {
-
-        cameraProvider =
-            suspendCoroutine { continuation ->
-
-                val future =
-                    ProcessCameraProvider.getInstance(context)
-
-                future.addListener(
-
-                    {
-                        continuation.resume(
-                            future.get()
-                        )
-                    },
-
-                    ContextCompat.getMainExecutor(context)
+        viewModelScope.launch {
+            runCatching {
+                engine?.initialize(
+                    EngineVideoConfig(
+                        width = setupState.resolution.width,
+                        height = setupState.resolution.height,
+                        fps = setupState.frameRate.value,
+                        bitrateBps = resolveBitrateBps(setupState.bitrate, setupState.resolution.width)
+                    ),
+                    targetRotation = targetRotation
                 )
-            }
-
-        bindCamera(
-            lifecycleOwner,
-            previewView
-        )
-    }
-
-
-    /**
-     * Bind CameraX preview.
-     */
-    private fun bindCamera(
-        lifecycleOwner: LifecycleOwner,
-        previewView: PreviewView
-    ) {
-
-        val provider =
-            cameraProvider ?: return
-
-        provider.unbindAll()
-
-        val preview =
-            Preview.Builder()
-                .build()
-                .also {
-
-                    it.setSurfaceProvider(
-                        previewView.surfaceProvider
-                    )
-                }
-
-        val cameraSelector =
-            CameraSelector.Builder()
-                .requireLensFacing(
-                    currentLensFacing
-                )
-                .build()
-
-        try {
-
-            val camera =
-                provider.bindToLifecycle(
-                    lifecycleOwner,
-                    cameraSelector,
-                    preview
-                )
-
-            cameraControl =
-                camera.cameraControl
-
-            cameraInfo =
-                camera.cameraInfo
-
-            uiState =
-                uiState.copy(
+            }.onSuccess {
+                uiState = uiState.copy(
                     cameraReady = true,
-
-                    isTorchAvailable =
-                        cameraInfo?.hasFlashUnit()
-                            ?: false
+                    isTorchAvailable = engine?.isTorchAvailable() ?: false,
+                    minZoomRatio = engine?.zoomRange()?.start ?: 1f,
+                    maxZoomRatio = engine?.zoomRange()?.endInclusive ?: 1f,
+                    zoomRatio = engine?.zoomRange()?.start ?: 1f,
+                    exposureMin = engine?.exposureRange()?.first ?: 0,
+                    exposureMax = engine?.exposureRange()?.last ?: 0
                 )
-
-        } catch (e: Exception) {
-
-            e.printStackTrace()
-
-            uiState =
-                uiState.copy(
-                    cameraReady = false,
-
-                    errorMessage =
-                        e.message
-                            ?: "Unable to start camera"
-                )
+            }.onFailure { e -> uiState = uiState.copy(streamState = StreamState.ERROR, errorMessage = e.message) }
         }
     }
 
-
-    /**
-     * Switch between front and back camera.
-     */
-    fun flip(
-        lifecycleOwner: LifecycleOwner,
-        previewView: PreviewView
-    ) {
-
-        currentLensFacing =
-            if (
-                currentLensFacing ==
-                CameraSelector.LENS_FACING_BACK
-            ) {
-                CameraSelector.LENS_FACING_FRONT
-            } else {
-                CameraSelector.LENS_FACING_BACK
-            }
-
-        bindCamera(
-            lifecycleOwner,
-            previewView
-        )
+    fun startPreview(surface: Surface) {
+        activePreviewSurface = surface
+        viewModelScope.launch { engine?.startCameraPreview(surface) }
     }
 
-
-    /**
-     * Toggle camera flashlight.
-     */
-    fun toggleTorch() {
-
-        if (!uiState.isTorchAvailable) {
-            return
-        }
-
-        val newState =
-            !uiState.isTorchOn
-
-        cameraControl?.enableTorch(
-            newState
-        )
-
-        uiState =
-            uiState.copy(
-                isTorchOn = newState
-            )
+    fun stopPreview() {
+        activePreviewSurface = null
+        viewModelScope.launch { engine?.stopCameraPreview() }
     }
 
-
-    /**
-     * Starts the RTMP live stream.
-     *
-     * The Intent is retained for compatibility with the
-     * existing screen-share permission flow.
-     *
-     * The current StreamEngine uses the camera streamer,
-     * not MediaProjection.
-     */
-    fun goLive(
-        rtmpUrl: String,
-        mediaProjectionIntent: Intent
-    ) {
-
-        if (rtmpUrl.isBlank()) {
-
-            uiState =
-                uiState.copy(
-                    streamState = StreamState.ERROR,
-                    errorMessage =
-                        "RTMP URL is empty"
-                )
-
-            return
-        }
-
-        uiState =
-            uiState.copy(
-                streamState =
-                    StreamState.CONNECTING,
-
-                errorMessage = null
-            )
-
+    fun goLive(rtmpUrl: String) {
+        uiState = uiState.copy(streamState = StreamState.CONNECTING, errorMessage = null)
         viewModelScope.launch {
-
-            runCatching {
-
-                engine?.goLive(
-                    rtmpUrl = rtmpUrl,
-                    mediaProjectionIntent =
-                        mediaProjectionIntent
-                )
-                    ?: throw IllegalStateException(
-                        "Stream engine is not initialized"
-                    )
-            }
-
-                .onSuccess {
-
-                    uiState =
-                        uiState.copy(
-                            streamState =
-                                StreamState.LIVE,
-
-                            errorMessage = null
-                        )
-                }
-
-                .onFailure { error ->
-
-                    error.printStackTrace()
-
-                    uiState =
-                        uiState.copy(
-                            streamState =
-                                StreamState.ERROR,
-
-                            errorMessage =
-                                error.message
-                                    ?: "Failed to start live stream"
-                        )
-                }
+            runCatching { engine?.goLive(rtmpUrl) }
+                .onSuccess { uiState = uiState.copy(streamState = StreamState.LIVE) }
+                .onFailure { e -> uiState = uiState.copy(streamState = StreamState.ERROR, errorMessage = e.message ?: "Connection failed") }
         }
     }
 
-
-    /**
-     * Stops live streaming.
-     */
     fun stopLive() {
-
         viewModelScope.launch {
-
-            runCatching {
-                engine?.stopLive()
-            }
-
-            uiState =
-                uiState.copy(
-                    streamState =
-                        StreamState.IDLE
-                )
+            runCatching { engine?.stopLive() }
+            uiState = uiState.copy(streamState = StreamState.IDLE)
         }
     }
 
-
-    /**
-     * Toggle microphone mute.
-     */
-    fun toggleMic() {
-
-        audioController?.let { controller ->
-
-            val newMuted =
-                !uiState.isMicMuted
-
-            controller.setMicMuted(
-                newMuted
-            )
-
-            uiState =
-                uiState.copy(
-                    isMicMuted = newMuted
-                )
-        }
-    }
-
-
-    /**
-     * Resolve bitrate from selected preset.
-     */
-    private fun resolveBitrateBps(
-        preset: BitratePreset,
-        widthHint: Int
-    ): Int {
-
-        return (
-            preset.kbps
-                ?: if (widthHint >= 1920) {
-                    5000
-                } else {
-                    3000
+    fun flip() {
+        viewModelScope.launch {
+            runCatching { engine?.flipCamera() ?: false }
+                .onSuccess { nowFront ->
+                    uiState = uiState.copy(isFrontCamera = nowFront, isTorchOn = false, isTorchAvailable = engine?.isTorchAvailable() ?: false)
+                    activePreviewSurface?.let { engine?.startCameraPreview(it) }
                 }
-            ) * 1000
+        }
     }
 
-
-    fun setMicGain(
-        percent: Int
-    ) {
-
-        uiState =
-            uiState.copy(
-                micGainPercent =
-                    percent
-            )
+    fun toggleTorch() {
+        if (!uiState.isTorchAvailable) return
+        val newState = !uiState.isTorchOn
+        viewModelScope.launch {
+            runCatching { engine?.setTorch(newState) }
+                .onSuccess { uiState = uiState.copy(isTorchOn = newState) }
+        }
     }
 
-
-    fun setMusicVolume(
-        percent: Int
-    ) {
-
-        uiState =
-            uiState.copy(
-                musicVolumePercent =
-                    percent
-            )
+    fun setZoom(ratio: Float) {
+        uiState = uiState.copy(zoomRatio = ratio)
+        viewModelScope.launch { runCatching { engine?.setZoomRatio(ratio) } }
     }
 
-
-    fun connectBluetoothMic() {
-
-        audioController
-            ?.startBluetoothScoIfAvailable()
+    fun setExposure(index: Int) {
+        uiState = uiState.copy(exposureIndex = index)
+        viewModelScope.launch { runCatching { engine?.setExposureCompensation(index) } }
     }
 
-
-    fun setExposure(
-        index: Int
-    ) {
-        // Camera exposure implementation can be
-        // connected to CameraX cameraControl later.
+    fun toggleMic() {
+        audioController?.let {
+            val newMuted = !uiState.isMicMuted
+            it.setMicMuted(newMuted)
+            uiState = uiState.copy(isMicMuted = newMuted)
+        }
     }
 
-
-    fun setZoom(
-        ratio: Float
-    ) {
-        cameraControl?.setZoomRatio(
-            ratio.coerceAtLeast(1f)
-        )
+    fun onScreenSharePermissionResult(granted: Boolean, data: Intent?) {
+        uiState = uiState.copy(screenSharePermissionGranted = granted)
     }
 
+    fun setMicGain(percent: Int) { uiState = uiState.copy(micGainPercent = percent.coerceIn(0, 200)) }
+    fun setMusicVolume(percent: Int) { uiState = uiState.copy(musicVolumePercent = percent.coerceIn(0, 100)) }
+    fun connectBluetoothMic() { audioController?.startBluetoothScoIfAvailable() }
+    fun setWhiteBalance(preset: WhiteBalancePreset) {}
 
-    fun setWhiteBalance(
-        preset: WhiteBalancePreset
-    ) {
-        // Reserved for CameraX extension implementation.
-    }
-
-
-    override fun onCleared() {
-
-        super.onCleared()
-
-        cameraProvider?.unbindAll()
-
-        audioController = null
+    private fun resolveBitrateBps(preset: BitratePreset, widthHint: Int): Int {
+        return (preset.kbps ?: if (widthHint >= 1920) 5000 else 3000) * 1000
     }
 }
