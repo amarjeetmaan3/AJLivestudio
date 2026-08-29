@@ -4,18 +4,6 @@ import android.net.Uri
 import androidx.compose.runtime.mutableStateListOf
 import androidx.lifecycle.ViewModel
 
-data class OverlayItem(
-    val id: String,
-    val type: OverlayType,
-    val content: String, // Text, URL, or URI string for Logo
-    var x: Float = 0f,
-    var y: Float = 0f
-)
-
-enum class OverlayType {
-    TEXT, LOGO, LOWER_THIRD, WEB
-}
-
 class OverlayViewModel : ViewModel() {
     val items = mutableStateListOf<OverlayItem>()
     var webReloadTick = 0
@@ -44,11 +32,12 @@ class OverlayViewModel : ViewModel() {
         items.removeAll { it.id == id }
     }
 
-    fun updatePosition(id: String, x: Float, y: Float) {
+    // नया फंक्शन: जगह (x,y) और साइज़ (scale) दोनों सेव करेगा
+    fun updateTransform(id: String, x: Float, y: Float, scale: Float) {
         val index = items.indexOfFirst { it.id == id }
         if (index != -1) {
             val item = items[index]
-            items[index] = item.copy(x = x, y = y)
+            items[index] = item.copy(x = x, y = y, scale = scale)
         }
     }
 }
