@@ -188,7 +188,7 @@ dependencies {
     implementation(
         "com.google.guava:guava:32.1.3-android"
     )
-  
+  implementation("io.github.thibaultbee.streampack:streampack-services:3.2.0")
 
 
     // ---------------------------------------------------------
