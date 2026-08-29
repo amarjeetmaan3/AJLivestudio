@@ -3,8 +3,6 @@ package com.amarjeetmaan.ajlivestudio.ui.camera
 import android.app.Activity
 import android.content.pm.ActivityInfo
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -19,6 +17,7 @@ import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -27,7 +26,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -40,7 +41,6 @@ import com.amarjeetmaan.ajlivestudio.ui.theme.CrimsonBright
 import com.amarjeetmaan.ajlivestudio.ui.theme.GoldPrimary
 import com.amarjeetmaan.ajlivestudio.ui.theme.LiveGreen
 import com.amarjeetmaan.ajlivestudio.ui.theme.NavyDeep
-import io.github.thibaultbee.streampack.services.MediaProjectionUtils
 
 @Composable
 fun CameraPreviewScreen(
@@ -54,16 +54,8 @@ fun CameraPreviewScreen(
     val uiState = viewModel.uiState
 
     var showOverlayPanel by remember { mutableStateOf(false) }
-    var showAudioMixer by remember { mutableStateOf(false) }
     var showExitDialog by remember { mutableStateOf(false) }
-    
-    val screenSharePermissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK && result.data != null) {
-            viewModel.startScreenLive(context, result.resultCode, result.data!!, rtmpConfig.fullUrl())
-        }
-    }
+    var overlayContainerSize by remember { mutableStateOf(IntSize.Zero) }
 
     BackHandler(enabled = uiState.streamState == StreamState.LIVE) { showExitDialog = true }
 
@@ -73,8 +65,8 @@ fun CameraPreviewScreen(
             title = { Text("Stop Live Stream?", color = Color.Black) },
             text = { Text("Are you sure you want to end the current live broadcast?", color = Color.DarkGray) },
             confirmButton = {
-                TextButton(onClick = { showExitDialog = false; viewModel.stopLive(context); onBack() }) { 
-                    Text("End Stream", color = CrimsonBright, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold) 
+                TextButton(onClick = { showExitDialog = false; viewModel.stopLive(context); onBack() }) {
+                    Text("End Stream", color = CrimsonBright, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
                 }
             },
             dismissButton = { TextButton(onClick = { showExitDialog = false }) { Text("Cancel", color = Color.Gray) } },
@@ -83,18 +75,35 @@ fun CameraPreviewScreen(
     }
 
     val isLandscape = setupState.orientation == com.amarjeetmaan.ajlivestudio.ui.setup.StreamOrientation.LANDSCAPE
-    
+
     DisposableEffect(isLandscape) {
         val activity = context as? Activity
         activity?.requestedOrientation = if (isLandscape) ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT
         onDispose { activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED }
     }
 
-    androidx.compose.runtime.LaunchedEffect(Unit) {
+    LaunchedEffect(Unit) {
         viewModel.initialize(context, setupState)
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+    // Re-bake the overlay into the actual video stream whenever an item
+    // changes, or the on-screen box is (re)measured. This is what makes
+    // logo/text/lower-third reach YouTube, not just the Studio screen.
+    LaunchedEffect(overlayViewModel.items.toList(), overlayContainerSize) {
+        viewModel.updateOverlayBitmap(
+            context = context,
+            items = overlayViewModel.items,
+            containerWidthPx = overlayContainerSize.width,
+            containerHeightPx = overlayContainerSize.height
+        )
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .onSizeChanged { overlayContainerSize = it }
+    ) {
         if (uiState.cameraReady) {
             val previewRatio = if (isLandscape) 16f / 9f else 9f / 16f
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -115,6 +124,9 @@ fun CameraPreviewScreen(
             }
         }
 
+        // Studio editor overlay (drag/zoom). The exact same item state is
+        // baked into the encoded video by OverlayRenderer/OverlayCompositor
+        // above — this is the editing view, not a second, disconnected path.
         OverlayLayer(
             items = overlayViewModel.items,
             editable = true,
@@ -149,11 +161,8 @@ fun CameraPreviewScreen(
                     if (uiState.streamState == StreamState.LIVE) {
                         showExitDialog = true
                     } else {
-                        try {
-                            screenSharePermissionLauncher.launch(MediaProjectionUtils.createScreenCaptureIntent(context))
-                        } catch (e: Exception) {
-                            e.printStackTrace()
-                        }
+                        // Direct camera -> RTMP. No popup, no MediaProjection.
+                        viewModel.goLive(rtmpConfig.fullUrl())
                     }
                 },
                 enabled = uiState.cameraReady && uiState.streamState != StreamState.CONNECTING,
