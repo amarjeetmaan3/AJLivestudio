@@ -25,21 +25,6 @@ import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import java.util.concurrent.CountDownLatch
 
-/**
- * Sits between the camera and StreamPack's encoder. Every camera frame:
- *   1) draws the live camera image full-screen
- *   2) draws the overlay bitmap (built by OverlayRenderer from the app's
- *      TEXT/LOGO/LOWER_THIRD/WEB overlay state) blended on top
- * ...onto EVERY surface StreamPack has registered here — which, because
- * this processor is installed via cameraSingleStreamer's
- * surfaceProcessorFactory, includes both the encoder surface (goes to
- * RTMP/YouTube) and the local preview surface (goes to the phone screen).
- * One pipeline, one composited frame, no screen capture anywhere.
- *
- * Built directly against StreamPack 3.2.0's published Dokka API
- * (thibaultbee.github.io/StreamPack/streampack-core) for
- * ISurfaceProcessorInternal / ISurfaceOutput / Timebase.
- */
 class OverlayCompositor : ISurfaceProcessorInternal {
 
     class Factory : ISurfaceProcessorInternal.Factory {
@@ -88,13 +73,10 @@ class OverlayCompositor : ISurfaceProcessorInternal {
         runOnGlThreadBlocking { initEgl() }
     }
 
-    /** Called from StreamEngine whenever the overlay state changes. */
     fun setOverlayBitmap(bitmap: Bitmap?) {
         pendingOverlayBitmap = bitmap
         overlayBitmapVersion++
     }
-
-    // ---- ISurfaceProcessorInternal ----
 
     override fun createInputSurface(surfaceSize: Size, timebase: Timebase): Surface {
         this.timebase = timebase
@@ -196,8 +178,6 @@ class OverlayCompositor : ISurfaceProcessorInternal {
         if (Factory.instance === this) Factory.instance = null
     }
 
-    // ---- GL thread plumbing ----
-
     private fun runOnGlThread(block: () -> Unit) {
         if (Thread.currentThread() == glThread) block() else glHandler.post(block)
     }
@@ -212,8 +192,6 @@ class OverlayCompositor : ISurfaceProcessorInternal {
         latch.await()
     }
 
-    // ---- EGL setup ----
-
     private fun initEgl() {
         eglDisplay = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
         check(eglDisplay != EGL14.EGL_NO_DISPLAY) { "Unable to get EGL14 display" }
@@ -226,7 +204,7 @@ class OverlayCompositor : ISurfaceProcessorInternal {
             EGL14.EGL_BLUE_SIZE, 8,
             EGL14.EGL_ALPHA_SIZE, 8,
             EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
-            0x3142 /* EGL_RECORDABLE_ANDROID */, 1,
+            0x3142, 1,
             EGL14.EGL_NONE
         )
         val configs = arrayOfNulls<EGLConfig>(1)
@@ -269,8 +247,6 @@ class OverlayCompositor : ISurfaceProcessorInternal {
         if (eglSurface != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(eglDisplay, eglSurface)
     }
 
-    // ---- Textures ----
-
     private fun createExternalTexture(): Int {
         val tex = IntArray(1)
         GLES20.glGenTextures(1, tex, 0)
@@ -306,8 +282,6 @@ class OverlayCompositor : ISurfaceProcessorInternal {
         }
     }
 
-    // ---- Rendering ----
-
     private fun drawFrame() {
         runOnGlThread {
             val st = surfaceTexture ?: return@runOnGlThread
@@ -318,7 +292,6 @@ class OverlayCompositor : ISurfaceProcessorInternal {
 
             val entries = synchronized(outputsLock) { outputs.toList() }
             if (entries.isEmpty()) {
-                // Drain the texture even with no outputs yet, or the camera stalls.
                 val pbufferAttribs = intArrayOf(EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE)
                 val pbuffer = EGL14.eglCreatePbufferSurface(eglDisplay, eglConfig, pbufferAttribs, 0)
                 EGL14.eglMakeCurrent(eglDisplay, pbuffer, pbuffer, eglContext)
@@ -378,7 +351,8 @@ class OverlayCompositor : ISurfaceProcessorInternal {
 
     private fun drawOverlay() {
         GLES20.glEnable(GLES20.GL_BLEND)
-        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        // Fixed blend function to avoid black fringing around text and web components
+        GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA)
         GLES20.glUseProgram(overlayProgram)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, overlayTextureId)
@@ -399,8 +373,6 @@ class OverlayCompositor : ISurfaceProcessorInternal {
         GLES20.glDisableVertexAttribArray(texLoc)
         GLES20.glDisable(GLES20.GL_BLEND)
     }
-
-    // ---- Shader helpers ----
 
     private fun loadShader(type: Int, src: String): Int {
         val shader = GLES20.glCreateShader(type)
@@ -475,13 +447,7 @@ class OverlayCompositor : ISurfaceProcessorInternal {
         """
 
         private val FULLSCREEN_VERTS = floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f)
-        private val CAMERA_TEXCOORDS = floatArrayOf(
-            0f, 0f, 0f, 1f,
-            1f, 0f, 0f, 1f,
-            0f, 1f, 0f, 1f,
-            1f, 1f, 0f, 1f
-        )
-        // Bitmap top row -> screen top (v=0 at the top two vertices).
+        private val CAMERA_TEXCOORDS = floatArrayOf(0f, 0f, 0f, 1f, 1f, 0f, 0f, 1f, 0f, 1f, 0f, 1f, 1f, 1f, 0f, 1f)
         private val OVERLAY_TEXCOORDS = floatArrayOf(0f, 1f, 1f, 1f, 0f, 0f, 1f, 0f)
 
         private fun floatBuffer(data: FloatArray): FloatBuffer =
