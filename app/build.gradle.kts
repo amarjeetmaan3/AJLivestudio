@@ -155,14 +155,6 @@ dependencies {
         "io.github.thibaultbee.streampack:streampack-rtmp:$streamPackVersion"
     )
 
-    // Required for MediaProjection / screen-capture services.
-    // We are keeping this dependency because the project still
-    // contains the screen-share infrastructure.
-    implementation(
-        "io.github.thibaultbee.streampack:streampack-services:$streamPackVersion"
-    )
-
-
     // ---------------------------------------------------------
     // CameraX
     // ---------------------------------------------------------
@@ -188,7 +180,6 @@ dependencies {
     implementation(
         "com.google.guava:guava:32.1.3-android"
     )
-  implementation("io.github.thibaultbee.streampack:streampack-services:3.2.0")
 
 
     // ---------------------------------------------------------
