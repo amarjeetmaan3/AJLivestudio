@@ -112,12 +112,16 @@ class CameraViewModel : ViewModel() {
         viewModelScope.launch { runCatching { engine?.setExposureCompensation(index) } }
     }
 
-    fun toggleMic() {
-        audioController?.let {
-            val newMuted = !uiState.isMicMuted
-            it.setMicMuted(newMuted)
-            uiState = uiState.copy(isMicMuted = newMuted)
-        }
+    // नया माइक म्यूट लॉजिक (100% आवाज़ बंद करेगा)
+    fun toggleMic(context: Context) {
+        val newMuted = !uiState.isMicMuted
+        uiState = uiState.copy(isMicMuted = newMuted)
+        
+        audioController?.setMicMuted(newMuted)
+        try {
+            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+            audioManager.isMicrophoneMute = newMuted
+        } catch (e: Exception) { e.printStackTrace() }
     }
 
     fun setMicGain(percent: Int) { uiState = uiState.copy(micGainPercent = percent.coerceIn(0, 200)) }
