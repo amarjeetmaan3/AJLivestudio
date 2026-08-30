@@ -19,22 +19,1340 @@ import android.view.Surface
 import io.github.thibaultbee.streampack.core.elements.processing.video.ISurfaceProcessorInternal
 import io.github.thibaultbee.streampack.core.elements.processing.video.outputs.ISurfaceOutput
 import io.github.thibaultbee.streampack.core.elements.utils.av.video.DynamicRangeProfile
+import io.github.thibaultbee.streampack.core.elements.utils.time.Timebase
 import io.github.thibaultbee.streampack.core.pipelines.IVideoDispatcherProvider
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import java.util.concurrent.CountDownLatch
 
-/**
- * StreamPack SurfaceProcessor that composites the camera frame and the latest overlay bitmap
- * before the frame reaches the encoder.
- *
- * There is deliberately no MediaProjection / screen-capture path here.
- */
 class OverlayCompositor : ISurfaceProcessorInternal {
 
     class Factory : ISurfaceProcessorInternal.Factory {
+
         @Volatile
+        private var processor: OverlayCompositor? = null
+
+        override fun create(
+            dynamicRangeProfile: DynamicRangeProfile,
+            dispatcherProvider: IVideoDispatcherProvider
+        ): ISurfaceProcessorInternal {
+            return OverlayCompositor().also {
+                processor = it
+            }
+        }
+
+        fun setOverlayBitmap(bitmap: Bitmap?) {
+            processor?.setOverlayBitmap(bitmap)
+        }
+    }
+
+    override var isMuted: Boolean = false
+
+    private val glThread =
+        HandlerThread("AJLiveStudio-OverlayGL").apply {
+            start()
+        }
+
+    private val glHandler =
+        Handler(glThread.looper)
+
+    private var eglDisplay =
+        EGL14.EGL_NO_DISPLAY
+
+    private var eglContext =
+        EGL14.EGL_NO_CONTEXT
+
+    private var eglConfig: EGLConfig? = null
+
+    private var eglPbufferSurface =
+        EGL14.EGL_NO_SURFACE
+
+    private var cameraTextureId = 0
+    private var overlayTextureId = 0
+
+    private var surfaceTexture: SurfaceTexture? = null
+    private var inputSurface: Surface? = null
+
+    private var cameraProgram = 0
+    private var overlayProgram = 0
+
+    private val textureMatrix =
+        FloatArray(16)
+
+    private var framePending = false
+    private var released = false
+
+    private var overlayVersion = 0L
+    private var uploadedOverlayVersion = -1L
+
+    private var pendingOverlay: Bitmap? = null
+    private var uploadedOverlay: Bitmap? = null
+
+    private var hasOverlay = false
+
+    private val vertexBuffer: FloatBuffer =
+        createFloatBuffer(
+            floatArrayOf(
+                -1f, -1f,
+                 1f, -1f,
+                -1f,  1f,
+                 1f,  1f
+            )
+        )
+
+    private val cameraTexCoordBuffer: FloatBuffer =
+        createFloatBuffer(
+            floatArrayOf(
+                0f, 1f,
+                1f, 1f,
+                0f, 0f,
+                1f, 0f
+            )
+        )
+
+    private val overlayTexCoordBuffer: FloatBuffer =
+        createFloatBuffer(
+            floatArrayOf(
+                0f, 1f,
+                1f, 1f,
+                0f, 0f,
+                1f, 0f
+            )
+        )
+
+    private data class OutputEntry(
+        val output: ISurfaceOutput,
+        val eglSurface: EGLSurface
+    )
+
+    private val outputs =
+        mutableListOf<OutputEntry>()
+
+    init {
+        runOnGlThreadBlocking {
+            initEgl()
+        }
+    }
+
+    fun setOverlayBitmap(bitmap: Bitmap?) {
+        if (released) return
+
+        val copy = bitmap?.let {
+            runCatching {
+                it.copy(Bitmap.Config.ARGB_8888, false)
+            }.getOrNull()
+        }
+
+        synchronized(this) {
+            pendingOverlay?.let {
+                if (!it.isRecycled) {
+                    it.recycle()
+                }
+            }
+
+            pendingOverlay = copy
+            overlayVersion++
+        }
+
+        glHandler.post {
+            if (!released && framePending && outputs.isNotEmpty()) {
+                renderPendingFrame()
+            }
+        }
+    }
+
+    override fun createInputSurface(
+        surfaceSize: Size,
+        timebase: Timebase
+    ): Surface {
+        check(!released) {
+            "OverlayCompositor is released"
+        }
+
+        var result: Surface? = null
+
+        runOnGlThreadBlocking {
+            check(
+                eglContext != EGL14.EGL_NO_CONTEXT
+            ) {
+                "EGL context is not initialized"
+            }
+
+            if (cameraTextureId == 0) {
+                cameraTextureId =
+                    createExternalTexture()
+            }
+
+            surfaceTexture?.setOnFrameAvailableListener(null)
+            surfaceTexture?.release()
+            surfaceTexture = null
+
+            inputSurface?.release()
+            inputSurface = null
+
+            val st =
+                SurfaceTexture(cameraTextureId)
+
+            st.setDefaultBufferSize(
+                surfaceSize.width,
+                surfaceSize.height
+            )
+
+            st.setOnFrameAvailableListener(
+                {
+                    if (released) return@setOnFrameAvailableListener
+
+                    framePending = true
+                    renderPendingFrame()
+                },
+                glHandler
+            )
+
+            surfaceTexture = st
+            inputSurface = Surface(st)
+
+            result = inputSurface
+        }
+
+        return checkNotNull(result)
+    }
+
+    override fun removeInputSurface(
+        surface: Surface
+    ) {
+        runOnGlThread {
+            if (
+                inputSurface === surface ||
+                inputSurface == surface
+            ) {
+                surfaceTexture
+                    ?.setOnFrameAvailableListener(null)
+
+                surfaceTexture?.release()
+                surfaceTexture = null
+
+                inputSurface?.release()
+                inputSurface = null
+
+                framePending = false
+            }
+        }
+    }
+
+    override fun addOutputSurface(
+        surfaceOutput: ISurfaceOutput
+    ) {
+        runOnGlThread {
+            if (released) return@runOnGlThread
+
+            val targetSurface =
+                surfaceOutput.targetSurface
+
+            val eglSurface =
+                createWindowSurface(targetSurface)
+
+            if (
+                eglSurface ==
+                EGL14.EGL_NO_SURFACE
+            ) {
+                Log.e(
+                    TAG,
+                    "Unable to create EGL output surface: " +
+                        "0x${Integer.toHexString(EGL14.eglGetError())}"
+                )
+                return@runOnGlThread
+            }
+
+            outputs.removeAll { old ->
+                if (old.output === surfaceOutput) {
+                    destroyWindowSurface(
+                        old.eglSurface
+                    )
+                    true
+                } else {
+                    false
+                }
+            }
+
+            outputs += OutputEntry(
+                surfaceOutput,
+                eglSurface
+            )
+
+            if (framePending) {
+                renderPendingFrame()
+            }
+        }
+    }
+
+    override fun removeOutputSurface(
+        surface: Surface
+    ) {
+        runOnGlThread {
+            val iterator =
+                outputs.iterator()
+
+            while (iterator.hasNext()) {
+                val entry = iterator.next()
+
+                if (
+                    entry.output.targetSurface ==
+                    surface
+                ) {
+                    destroyWindowSurface(
+                        entry.eglSurface
+                    )
+                    iterator.remove()
+                }
+            }
+        }
+    }
+
+    override fun removeOutputSurface(
+        surfaceOutput: ISurfaceOutput
+    ) {
+        runOnGlThread {
+            val iterator =
+                outputs.iterator()
+
+            while (iterator.hasNext()) {
+                val entry = iterator.next()
+
+                if (
+                    entry.output === surfaceOutput
+                ) {
+                    destroyWindowSurface(
+                        entry.eglSurface
+                    )
+                    iterator.remove()
+                }
+            }
+        }
+    }
+
+    override fun removeAllOutputSurfaces() {
+        runOnGlThread {
+            outputs.forEach {
+                destroyWindowSurface(
+                    it.eglSurface
+                )
+            }
+
+            outputs.clear()
+        }
+    }
+
+    override fun setTimebase(
+        surface: Surface,
+        timebase: Timebase
+    ) {
+        // The frame timestamp from SurfaceTexture is
+        // preserved for the encoder.
+    }
+
+    override fun release() {
+        if (released) return
+
+        released = true
+
+        runOnGlThreadBlocking {
+            surfaceTexture
+                ?.setOnFrameAvailableListener(null)
+
+            surfaceTexture?.release()
+            surfaceTexture = null
+
+            inputSurface?.release()
+            inputSurface = null
+
+            outputs.forEach {
+                destroyWindowSurface(
+                    it.eglSurface
+                )
+            }
+
+            outputs.clear()
+
+            if (cameraTextureId != 0) {
+                GLES20.glDeleteTextures(
+                    1,
+                    intArrayOf(cameraTextureId),
+                    0
+                )
+                cameraTextureId = 0
+            }
+
+            if (overlayTextureId != 0) {
+                GLES20.glDeleteTextures(
+                    1,
+                    intArrayOf(overlayTextureId),
+                    0
+                )
+                overlayTextureId = 0
+            }
+
+            if (cameraProgram != 0) {
+                GLES20.glDeleteProgram(
+                    cameraProgram
+                )
+                cameraProgram = 0
+            }
+
+            if (overlayProgram != 0) {
+                GLES20.glDeleteProgram(
+                    overlayProgram
+                )
+                overlayProgram = 0
+            }
+
+            pendingOverlay?.let {
+                if (!it.isRecycled) {
+                    it.recycle()
+                }
+            }
+
+            uploadedOverlay?.let {
+                if (!it.isRecycled) {
+                    it.recycle()
+                }
+            }
+
+            pendingOverlay = null
+            uploadedOverlay = null
+
+            releaseEgl()
+        }
+
+        glThread.quitSafely()
+    }
+
+    private fun renderPendingFrame() {
+        if (released) return
+        if (!framePending) return
+
+        val st =
+            surfaceTexture ?: return
+
+        if (outputs.isEmpty()) return
+
+        try {
+            st.updateTexImage()
+            st.getTransformMatrix(textureMatrix)
+
+            val timestampNs = st.timestamp
+
+            framePending = false
+
+            uploadLatestOverlay()
+
+            val snapshot =
+                outputs.toList()
+
+            for (entry in snapshot) {
+                if (released) return
+
+                val madeCurrent =
+                    EGL14.eglMakeCurrent(
+                        eglDisplay,
+                        entry.eglSurface,
+                        entry.eglSurface,
+                        eglContext
+                    )
+
+                if (!madeCurrent) {
+                    Log.e(
+                        TAG,
+                        "eglMakeCurrent failed: " +
+                            "0x${Integer.toHexString(EGL14.eglGetError())}"
+                    )
+                    continue
+                }
+
+                val size =
+                    entry.output.targetResolution
+
+                GLES20.glViewport(
+                    0,
+                    0,
+                    size.width,
+                    size.height
+                )
+
+                GLES20.glDisable(
+                    GLES20.GL_BLEND
+                )
+
+                GLES20.glClearColor(
+                    0f,
+                    0f,
+                    0f,
+                    1f
+                )
+
+                GLES20.glClear(
+                    GLES20.GL_COLOR_BUFFER_BIT
+                )
+
+                val outputMatrix =
+                    FloatArray(16)
+
+                entry.output.updateTransformMatrix(
+                    outputMatrix,
+                    textureMatrix
+                )
+
+                drawCamera(outputMatrix)
+
+                if (hasOverlay) {
+                    drawOverlay()
+                }
+
+                if (timestampNs > 0L) {
+                    EGLExt.eglPresentationTimeANDROID(
+                        eglDisplay,
+                        entry.eglSurface,
+                        timestampNs
+                    )
+                }
+
+                if (
+                    !EGL14.eglSwapBuffers(
+                        eglDisplay,
+                        entry.eglSurface
+                    )
+                ) {
+                    Log.e(
+                        TAG,
+                        "eglSwapBuffers failed: " +
+                            "0x${Integer.toHexString(EGL14.eglGetError())}"
+                    )
+                }
+            }
+
+            EGL14.eglMakeCurrent(
+                eglDisplay,
+                eglPbufferSurface,
+                eglPbufferSurface,
+                eglContext
+            )
+        } catch (t: Throwable) {
+            Log.e(
+                TAG,
+                "Camera/overlay render failed",
+                t
+            )
+        }
+    }
+
+    private fun uploadLatestOverlay() {
+        val bitmap: Bitmap?
+
+        synchronized(this) {
+            if (
+                uploadedOverlayVersion ==
+                overlayVersion
+            ) {
+                return
+            }
+
+            bitmap = pendingOverlay
+            pendingOverlay = null
+
+            uploadedOverlayVersion =
+                overlayVersion
+        }
+
+        if (bitmap == null) {
+            hasOverlay = false
+
+            uploadedOverlay?.let {
+                if (!it.isRecycled) {
+                    it.recycle()
+                }
+            }
+
+            uploadedOverlay = null
+            return
+        }
+
+        if (overlayTextureId == 0) {
+            overlayTextureId =
+                createTexture()
+        }
+
+        GLES20.glBindTexture(
+            GLES20.GL_TEXTURE_2D,
+            overlayTextureId
+        )
+
+        GLES20.glTexParameteri(
+            GLES20.GL_TEXTURE_2D,
+            GLES20.GL_TEXTURE_MIN_FILTER,
+            GLES20.GL_LINEAR
+        )
+
+        GLES20.glTexParameteri(
+            GLES20.GL_TEXTURE_2D,
+            GLES20.GL_TEXTURE_MAG_FILTER,
+            GLES20.GL_LINEAR
+        )
+
+        GLES20.glTexParameteri(
+            GLES20.GL_TEXTURE_2D,
+            GLES20.GL_TEXTURE_WRAP_S,
+            GLES20.GL_CLAMP_TO_EDGE
+        )
+
+        GLES20.glTexParameteri(
+            GLES20.GL_TEXTURE_2D,
+            GLES20.GL_TEXTURE_WRAP_T,
+            GLES20.GL_CLAMP_TO_EDGE
+        )
+
+        GLUtils.texImage2D(
+            GLES20.GL_TEXTURE_2D,
+            0,
+            bitmap,
+            0
+        )
+
+        GLES20.glBindTexture(
+            GLES20.GL_TEXTURE_2D,
+            0
+        )
+
+        uploadedOverlay?.let {
+            if (!it.isRecycled) {
+                it.recycle()
+            }
+        }
+
+        uploadedOverlay = bitmap
+        hasOverlay = true
+    }
+
+    private fun drawCamera(
+        matrix: FloatArray
+    ) {
+        GLES20.glUseProgram(
+            cameraProgram
+        )
+
+        val positionHandle =
+            GLES20.glGetAttribLocation(
+                cameraProgram,
+                "aPosition"
+            )
+
+        val texCoordHandle =
+            GLES20.glGetAttribLocation(
+                cameraProgram,
+                "aTexCoord"
+            )
+
+        val matrixHandle =
+            GLES20.glGetUniformLocation(
+                cameraProgram,
+                "uTexMatrix"
+            )
+
+        val textureHandle =
+            GLES20.glGetUniformLocation(
+                cameraProgram,
+                "uTexture"
+            )
+
+        vertexBuffer.position(0)
+
+        GLES20.glEnableVertexAttribArray(
+            positionHandle
+        )
+
+        GLES20.glVertexAttribPointer(
+            positionHandle,
+            2,
+            GLES20.GL_FLOAT,
+            false,
+            0,
+            vertexBuffer
+        )
+
+        cameraTexCoordBuffer.position(0)
+
+        GLES20.glEnableVertexAttribArray(
+            texCoordHandle
+        )
+
+        GLES20.glVertexAttribPointer(
+            texCoordHandle,
+            2,
+            GLES20.GL_FLOAT,
+            false,
+            0,
+            cameraTexCoordBuffer
+        )
+
+        GLES20.glUniformMatrix4fv(
+            matrixHandle,
+            1,
+            false,
+            matrix,
+            0
+        )
+
+        GLES20.glActiveTexture(
+            GLES20.GL_TEXTURE0
+        )
+
+        GLES20.glBindTexture(
+            GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+            cameraTextureId
+        )
+
+        GLES20.glUniform1i(
+            textureHandle,
+            0
+        )
+
+        GLES20.glDrawArrays(
+            GLES20.GL_TRIANGLE_STRIP,
+            0,
+            4
+        )
+
+        GLES20.glBindTexture(
+            GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+            0
+        )
+
+        GLES20.glDisableVertexAttribArray(
+            positionHandle
+        )
+
+        GLES20.glDisableVertexAttribArray(
+            texCoordHandle
+        )
+    }
+
+    private fun drawOverlay() {
+        GLES20.glEnable(
+            GLES20.GL_BLEND
+        )
+
+        GLES20.glBlendFunc(
+            GLES20.GL_SRC_ALPHA,
+            GLES20.GL_ONE_MINUS_SRC_ALPHA
+        )
+
+        GLES20.glUseProgram(
+            overlayProgram
+        )
+
+        val positionHandle =
+            GLES20.glGetAttribLocation(
+                overlayProgram,
+                "aPosition"
+            )
+
+        val texCoordHandle =
+            GLES20.glGetAttribLocation(
+                overlayProgram,
+                "aTexCoord"
+            )
+
+        val textureHandle =
+            GLES20.glGetUniformLocation(
+                overlayProgram,
+                "uTexture"
+            )
+
+        vertexBuffer.position(0)
+
+        GLES20.glEnableVertexAttribArray(
+            positionHandle
+        )
+
+        GLES20.glVertexAttribPointer(
+            positionHandle,
+            2,
+            GLES20.GL_FLOAT,
+            false,
+            0,
+            vertexBuffer
+        )
+
+        overlayTexCoordBuffer.position(0)
+
+        GLES20.glEnableVertexAttribArray(
+            texCoordHandle
+        )
+
+        GLES20.glVertexAttribPointer(
+            texCoordHandle,
+            2,
+            GLES20.GL_FLOAT,
+            false,
+            0,
+            overlayTexCoordBuffer
+        )
+
+        GLES20.glActiveTexture(
+            GLES20.GL_TEXTURE0
+        )
+
+        GLES20.glBindTexture(
+            GLES20.GL_TEXTURE_2D,
+            overlayTextureId
+        )
+
+        GLES20.glUniform1i(
+            textureHandle,
+            0
+        )
+
+        GLES20.glDrawArrays(
+            GLES20.GL_TRIANGLE_STRIP,
+            0,
+            4
+        )
+
+        GLES20.glBindTexture(
+            GLES20.GL_TEXTURE_2D,
+            0
+        )
+
+        GLES20.glDisableVertexAttribArray(
+            positionHandle
+        )
+
+        GLES20.glDisableVertexAttribArray(
+            texCoordHandle
+
+        )
+
+        GLES20.glDisable(
+            GLES20.GL_BLEND
+        )
+    }
+
+    private fun initEgl() {
+        eglDisplay =
+            EGL14.eglGetDisplay(
+                EGL14.EGL_DEFAULT_DISPLAY
+            )
+
+        check(
+            eglDisplay != EGL14.EGL_NO_DISPLAY
+        ) {
+            "Unable to get EGL display"
+        }
+
+        val version =
+            IntArray(2)
+
+        check(
+            EGL14.eglInitialize(
+                eglDisplay,
+                version,
+                0,
+                version,
+                1
+            )
+        ) {
+            "Unable to initialize EGL"
+        }
+
+        val configs =
+            arrayOfNulls<EGLConfig>(1)
+
+        val configCount =
+            IntArray(1)
+
+        val configSpec =
+            intArrayOf(
+                EGL14.EGL_RENDERABLE_TYPE,
+                EGL14.EGL_OPENGL_ES2_BIT,
+                EGL14.EGL_RED_SIZE,
+                8,
+                EGL14.EGL_GREEN_SIZE,
+                8,
+                EGL14.EGL_BLUE_SIZE,
+                8,
+                EGL14.EGL_ALPHA_SIZE,
+                8,
+                EGL14.EGL_NONE
+            )
+
+        check(
+            EGL14.eglChooseConfig(
+                eglDisplay,
+                configSpec,
+                0,
+                configs,
+                0,
+                configs.size,
+                configCount,
+                0
+            )
+        ) {
+            "Unable to choose EGL config"
+        }
+
+        eglConfig =
+            configs[0]
+
+        val contextAttributes =
+            intArrayOf(
+                EGL14.EGL_CONTEXT_CLIENT_VERSION,
+                2,
+                EGL14.EGL_NONE
+            )
+
+        eglContext =
+            EGL14.eglCreateContext(
+                eglDisplay,
+                eglConfig,
+                EGL14.EGL_NO_CONTEXT,
+                contextAttributes,
+                0
+            )
+
+        check(
+            eglContext != EGL14.EGL_NO_CONTEXT
+        ) {
+            "Unable to create EGL context"
+        }
+
+        val pbufferAttributes =
+            intArrayOf(
+                EGL14.EGL_WIDTH,
+                1,
+                EGL14.EGL_HEIGHT,
+                1,
+                EGL14.EGL_NONE
+            )
+
+        eglPbufferSurface =
+            EGL14.eglCreatePbufferSurface(
+                eglDisplay,
+                eglConfig,
+                pbufferAttributes,
+                0
+            )
+
+        check(
+            eglPbufferSurface !=
+                EGL14.EGL_NO_SURFACE
+        ) {
+            "Unable to create EGL pbuffer"
+        }
+
+        check(
+            EGL14.eglMakeCurrent(
+                eglDisplay,
+                eglPbufferSurface,
+                eglPbufferSurface,
+                eglContext
+            )
+        ) {
+            "Unable to make EGL context current"
+        }
+
+        cameraProgram =
+            createProgram(
+                CAMERA_VERTEX_SHADER,
+                CAMERA_FRAGMENT_SHADER
+            )
+
+        overlayProgram =
+            createProgram(
+                OVERLAY_VERTEX_SHADER,
+                OVERLAY_FRAGMENT_SHADER
+            )
+    }
+
+    private fun releaseEgl() {
+        if (
+            eglDisplay ==
+            EGL14.EGL_NO_DISPLAY
+        ) {
+            return
+        }
+
+        EGL14.eglMakeCurrent(
+            eglDisplay,
+            EGL14.EGL_NO_SURFACE,
+            EGL14.EGL_NO_SURFACE,
+            EGL14.EGL_NO_CONTEXT
+        )
+
+        if (
+            eglPbufferSurface !=
+            EGL14.EGL_NO_SURFACE
+        ) {
+            EGL14.eglDestroySurface(
+                eglDisplay,
+                eglPbufferSurface
+            )
+            eglPbufferSurface =
+                EGL14.EGL_NO_SURFACE
+        }
+
+        if (
+            eglContext !=
+            EGL14.EGL_NO_CONTEXT
+        ) {
+            EGL14.eglDestroyContext(
+                eglDisplay,
+                eglContext
+            )
+            eglContext =
+                EGL14.EGL_NO_CONTEXT
+        }
+
+        EGL14.eglTerminate(
+            eglDisplay
+        )
+
+        eglDisplay =
+            EGL14.EGL_NO_DISPLAY
+    }
+
+    private fun createWindowSurface(
+        surface: Surface
+    ): EGLSurface {
+        val attributes =
+            intArrayOf(
+                EGL14.EGL_NONE
+            )
+
+        return EGL14.eglCreateWindowSurface(
+            eglDisplay,
+            eglConfig,
+            surface,
+            attributes,
+            0
+        )
+    }
+
+    private fun destroyWindowSurface(
+        surface: EGLSurface
+    ) {
+        if (
+            surface != EGL14.EGL_NO_SURFACE
+        ) {
+            EGL14.eglDestroySurface(
+                eglDisplay,
+                surface
+            )
+        }
+    }
+
+    private fun createExternalTexture(): Int {
+        val textures =
+            IntArray(1)
+
+        GLES20.glGenTextures(
+            1,
+            textures,
+            0
+        )
+
+        GLES20.glBindTexture(
+            GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+            textures[0]
+        )
+
+        GLES20.glTexParameteri(
+            GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+            GLES20.GL_TEXTURE_MIN_FILTER,
+            GLES20.GL_LINEAR
+        )
+
+        GLES20.glTexParameteri(
+            GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+            GLES20.GL_TEXTURE_MAG_FILTER,
+            GLES20.GL_LINEAR
+        )
+
+        GLES20.glTexParameteri(
+            GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+            GLES20.GL_TEXTURE_WRAP_S,
+            GLES20.GL_CLAMP_TO_EDGE
+        )
+
+        GLES20.glTexParameteri(
+            GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+            GLES20.GL_TEXTURE_WRAP_T,
+            GLES20.GL_CLAMP_TO_EDGE
+        )
+
+        GLES20.glBindTexture(
+            GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+            0
+        )
+
+        return textures[0]
+    }
+
+    private fun createTexture(): Int {
+        val textures =
+            IntArray(1)
+
+        GLES20.glGenTextures(
+            1,
+            textures,
+            0
+        )
+
+        return textures[0]
+    }
+
+    private fun createProgram(
+        vertexSource: String,
+        fragmentSource: String
+    ): Int {
+        val vertexShader =
+            compileShader(
+                GLES20.GL_VERTEX_SHADER,
+                vertexSource
+            )
+
+        val fragmentShader =
+            compileShader(
+                GLES20.GL_FRAGMENT_SHADER,
+                fragmentSource
+            )
+
+        val program =
+            GLES20.glCreateProgram()
+
+        GLES20.glAttachShader(
+            program,
+            vertexShader
+        )
+
+        GLES20.glAttachShader(
+            program,
+            fragmentShader
+        )
+
+        GLES20.glLinkProgram(
+            program
+        )
+
+        val status =
+            IntArray(1)
+
+        GLES20.glGetProgramiv(
+            program,
+            GLES20.GL_LINK_STATUS,
+            status,
+            0
+        )
+
+        if (
+            status[0] == 0
+        ) {
+            val info =
+                GLES20.glGetProgramInfoLog(
+                    program
+                )
+
+            GLES20.glDeleteProgram(
+                program
+            )
+
+            throw IllegalStateException(
+                "GL program link failed: $info"
+            )
+        }
+
+        GLES20.glDeleteShader(
+            vertexShader
+        )
+
+        GLES20.glDeleteShader(
+            fragmentShader
+        )
+
+        return program
+    }
+
+    private fun compileShader(
+        type: Int,
+        source: String
+    ): Int {
+        val shader =
+            GLES20.glCreateShader(type)
+
+        GLES20.glShaderSource(
+            shader,
+            source
+        )
+
+        GLES20.glCompileShader(
+            shader
+        )
+
+        val status =
+            IntArray(1)
+
+        GLES20.glGetShaderiv(
+            shader,
+            GLES20.GL_COMPILE_STATUS,
+            status,
+            0
+        )
+
+        if (
+            status[0] == 0
+        ) {
+            val info =
+                GLES20.glGetShaderInfoLog(
+                    shader
+                )
+
+            GLES20.glDeleteShader(
+                shader
+            )
+
+            throw IllegalStateException(
+                "GL shader compile failed: $info"
+            )
+        }
+
+        return shader
+    }
+
+    private fun runOnGlThread(
+        block: () -> Unit
+    ) {
+        if (released) return
+
+        glHandler.post {
+            if (!released) {
+                block()
+            }
+        }
+    }
+
+    private fun runOnGlThreadBlocking(
+        block: () -> Unit
+    ) {
+        if (
+            Thread.currentThread().name ==
+            glThread.name
+        ) {
+            block()
+            return
+        }
+
+        val latch =
+            CountDownLatch(1)
+
+        var error: Throwable? = null
+
+        glHandler.post {
+            try {
+                block()
+            } catch (t: Throwable) {
+                error = t
+            } finally {
+                latch.countDown()
+            }
+        }
+
+        latch.await()
+
+        error?.let {
+            throw RuntimeException(
+                "GL thread operation failed",
+                it
+            )
+        }
+    }
+
+    private fun createFloatBuffer(
+        values: FloatArray
+    ): FloatBuffer {
+        return ByteBuffer
+            .allocateDirect(
+                values.size * 4
+            )
+            .order(
+                ByteOrder.nativeOrder()
+            )
+            .asFloatBuffer()
+            .apply {
+                put(values)
+                position(0)
+            }
+    }
+
+    companion object {
+        private const val TAG =
+            "OverlayCompositor"
+
+        private const val CAMERA_VERTEX_SHADER = """
+            attribute vec4 aPosition;
+            attribute vec4 aTexCoord;
+            uniform mat4 uTexMatrix;
+            varying vec2 vTexCoord;
+
+            void main() {
+                gl_Position = aPosition;
+                vTexCoord =
+                    (uTexMatrix * aTexCoord).xy;
+            }
+        """
+
+        private const val CAMERA_FRAGMENT_SHADER = """
+            #extension GL_OES_EGL_image_external : require
+
+            precision mediump float;
+
+            uniform samplerExternalOES uTexture;
+            varying vec2 vTexCoord;
+
+            void main() {
+                gl_FragColor =
+                    texture2D(
+                        uTexture,
+                        vTexCoord
+                    );
+            }
+        """
+
+        private const val OVERLAY_VERTEX_SHADER = """
+            attribute vec4 aPosition;
+            attribute vec2 aTexCoord;
+
+            varying vec2 vTexCoord;
+
+            void main() {
+                gl_Position = aPosition;
+                vTexCoord = aTexCoord;
+            }
+        """
+
+        private const val OVERLAY_FRAGMENT_SHADER = """
+            precision mediump float;
+
+            uniform sampler2D uTexture;
+            varying vec2 vTexCoord;
+
+            void main() {
+                gl_FragColor =
+                    texture2D(
+                        uTexture,
+                        vTexCoord
+                    );
+            }
+        """
+    }
+}        @Volatile
         private var processor: OverlayCompositor? = null
 
         override fun create(
