@@ -63,7 +63,6 @@ class OverlayCompositor : ISurfaceProcessorInternal {
     private var cameraProgram = 0
     private var overlayProgram = 0
 
-    // FIX: Tracking specific Timebase for each output surface to perfectly sync A/V for YouTube
     private data class OutputEntry(
         val output: ISurfaceOutput, 
         val eglSurface: EGLSurface,
@@ -84,7 +83,6 @@ class OverlayCompositor : ISurfaceProcessorInternal {
     override fun createInputSurface(surfaceSize: Size, timebase: Timebase): Surface {
         var result: Surface? = null
         runOnGlThreadBlocking {
-            // FIX: Temporary pbuffer to force EGL context active and prevent camera stalling
             val pbufferAttribs = intArrayOf(EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE)
             val pbuffer = EGL14.eglCreatePbufferSurface(eglDisplay, eglConfig, pbufferAttribs, 0)
             EGL14.eglMakeCurrent(eglDisplay, pbuffer, pbuffer, eglContext)
@@ -328,6 +326,10 @@ class OverlayCompositor : ISurfaceProcessorInternal {
             st.updateTexImage()
             st.getTransformMatrix(texMatrix)
             maybeUploadOverlay()
+            
+            // FIX: Using the hardware's native monotonic timestamp (st.timestamp) 
+            // which automatically aligns with StreamPack's internal A/V muxer.
+            val timestampNs = st.timestamp
 
             for (entry in entries) {
                 EGL14.eglMakeCurrent(eglDisplay, entry.eglSurface, entry.eglSurface, eglContext)
@@ -341,14 +343,7 @@ class OverlayCompositor : ISurfaceProcessorInternal {
                 drawCamera(outMatrix)
                 if (hasOverlay) drawOverlay()
 
-                // FIX: Guaranteed monotonic timestamps specifically mapped to StreamPack's required Timebase
-                val ptsNs = when (entry.timebase) {
-                    Timebase.EPOCH -> System.currentTimeMillis() * 1_000_000L
-                    Timebase.BOOTTIME -> android.os.SystemClock.elapsedRealtimeNanos()
-                    else -> System.nanoTime()
-                }
-
-                EGLExt.eglPresentationTimeANDROID(eglDisplay, entry.eglSurface, ptsNs)
+                EGLExt.eglPresentationTimeANDROID(eglDisplay, entry.eglSurface, timestampNs)
                 EGL14.eglSwapBuffers(eglDisplay, entry.eglSurface)
             }
         }
