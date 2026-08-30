@@ -21,6 +21,17 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 
+/**
+ * ONE pipeline, camera straight to encoder:
+ *
+ *   Camera -> OverlayCompositor (GPU/GLES, bakes overlay bitmap in)
+ *          -> [preview surface]   (phone screen)
+ *          -> [encoder surface]   (MediaCodec, via StreamPack) -> RTMP -> YouTube
+ *
+ * There is exactly one SingleStreamer (`streamer`), used for local
+ * preview AND for the actual broadcast. No MediaProjection, no screen
+ * capture, no second streamer anywhere in this class.
+ */
 class StreamEngine(private val context: Context) {
     var streamer: SingleStreamer? = null
         private set
@@ -33,7 +44,6 @@ class StreamEngine(private val context: Context) {
         currentCameraId = cameraId
         isFront = false
 
-        // Integrating OverlayCompositor with your original working SingleStreamer
         val newStreamer = cameraSingleStreamer(
             context = context,
             cameraId = cameraId,
@@ -49,6 +59,7 @@ class StreamEngine(private val context: Context) {
         withTimeoutOrNull(5_000) { newStreamer.videoInput?.sourceFlow?.filterNotNull()?.first() }
     }
 
+    /** Pushes the latest pre-rendered overlay bitmap into the compositor. */
     fun updateOverlay(bitmap: Bitmap?) {
         OverlayCompositor.Factory.instance?.setOverlayBitmap(bitmap)
     }
@@ -59,6 +70,7 @@ class StreamEngine(private val context: Context) {
 
     suspend fun stopCameraPreview() { streamer?.stopPreview() }
 
+    /** Direct camera -> RTMP. No popup, no MediaProjection, same streamer as preview. */
     suspend fun goLive(rtmpUrl: String) {
         streamer?.startStream(rtmpUrl)
     }
