@@ -47,7 +47,7 @@ class StreamEngine(private val context: Context) {
         val newStreamer = cameraSingleStreamer(
             context = context,
             cameraId = cameraId,
-            surfaceProcessorFactory = OverlayCompositor.Factory()
+            
         )
         targetRotation?.let { runCatching { newStreamer.setTargetRotation(it) } }
 
