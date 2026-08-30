@@ -2,7 +2,8 @@ package com.amarjeetmaan.ajlivestudio.ui.camera
 
 data class CameraUiState(
     val cameraReady: Boolean = false,
-    val streamState: StreamState = StreamState.IDLE,
+    val streamState: StreamState =
+        StreamState.IDLE,
     val isFrontCamera: Boolean = false,
     val isTorchOn: Boolean = false,
     val isTorchAvailable: Boolean = false,
@@ -12,7 +13,8 @@ data class CameraUiState(
     val exposureMin: Int = 0,
     val exposureMax: Int = 0,
     val exposureIndex: Int = 0,
-    val whiteBalance: WhiteBalancePreset = WhiteBalancePreset.AUTO,
+    val whiteBalance: WhiteBalancePreset =
+        WhiteBalancePreset.AUTO,
     val isMicMuted: Boolean = false,
     val micGainPercent: Int = 100,
     val musicVolumePercent: Int = 100,
@@ -27,10 +29,32 @@ enum class StreamState {
     ERROR
 }
 
-enum class WhiteBalancePreset(val label: String, val awbMode: Int) {
-    AUTO("Auto", 1),
-    INCANDESCENT("Incandescent", 2),
-    FLUORESCENT("Fluorescent", 3),
-    DAYLIGHT("Daylight", 5),
-    CLOUDY("Cloudy", 6)
+enum class WhiteBalancePreset(
+    val label: String,
+    val awbMode: Int
+) {
+    AUTO(
+        "Auto",
+        1
+    ),
+
+    INCANDESCENT(
+        "Incandescent",
+        2
+    ),
+
+    FLUORESCENT(
+        "Fluorescent",
+        3
+    ),
+
+    DAYLIGHT(
+        "Daylight",
+        5
+    ),
+
+    CLOUDY(
+        "Cloudy",
+        6
+    )
 }
