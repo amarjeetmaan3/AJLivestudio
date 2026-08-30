@@ -20,6 +20,7 @@ object OverlayRenderer {
 
     private val logoCache = HashMap<String, Bitmap>()
     
+    // Web Overlay Background Capture System
     private val webViews = ConcurrentHashMap<String, WebView>()
     private val initializingWebViews = ConcurrentHashMap<String, Boolean>()
     private val webBitmaps = ConcurrentHashMap<String, Bitmap>()
@@ -167,7 +168,6 @@ object OverlayRenderer {
         val targetWidth = (400f * density * scale).toInt().coerceAtLeast(100)
         val targetHeight = (300f * density * scale).toInt().coerceAtLeast(100)
 
-        // Fix: Removed null assignment to prevent ConcurrentHashMap Exception
         if (!webViews.containsKey(url) && !initializingWebViews.containsKey(url)) {
             initializingWebViews[url] = true
             mainHandler.post {
