@@ -63,11 +63,14 @@ class OverlayCompositor : ISurfaceProcessorInternal {
     private var cameraProgram = 0
     private var overlayProgram = 0
 
-    private data class OutputEntry(val output: ISurfaceOutput, val eglSurface: EGLSurface)
+    // FIX: Tracking specific Timebase for each output surface to perfectly sync A/V for YouTube
+    private data class OutputEntry(
+        val output: ISurfaceOutput, 
+        val eglSurface: EGLSurface,
+        var timebase: Timebase = Timebase.UPTIME
+    )
     private val outputs = mutableListOf<OutputEntry>()
     private val outputsLock = Object()
-
-    private var timebase: Timebase = Timebase.UPTIME
 
     init {
         runOnGlThreadBlocking { initEgl() }
@@ -79,11 +82,9 @@ class OverlayCompositor : ISurfaceProcessorInternal {
     }
 
     override fun createInputSurface(surfaceSize: Size, timebase: Timebase): Surface {
-        this.timebase = timebase
         var result: Surface? = null
         runOnGlThreadBlocking {
-            // FIX: Create a temporary pbuffer to ensure the GL context is ACTIVE 
-            // before creating the SurfaceTexture. This prevents the camera from stalling.
+            // FIX: Temporary pbuffer to force EGL context active and prevent camera stalling
             val pbufferAttribs = intArrayOf(EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE)
             val pbuffer = EGL14.eglCreatePbufferSurface(eglDisplay, eglConfig, pbufferAttribs, 0)
             EGL14.eglMakeCurrent(eglDisplay, pbuffer, pbuffer, eglContext)
@@ -106,7 +107,6 @@ class OverlayCompositor : ISurfaceProcessorInternal {
             inputSurface = surface
             result = surface
 
-            // Cleanup temp pbuffer
             EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
             EGL14.eglDestroySurface(eglDisplay, pbuffer)
         }
@@ -172,7 +172,15 @@ class OverlayCompositor : ISurfaceProcessorInternal {
     }
 
     override fun setTimebase(surface: Surface, timebase: Timebase) {
-        this.timebase = timebase
+        runOnGlThread {
+            synchronized(outputsLock) {
+                for (entry in outputs) {
+                    if (entry.output.targetSurface == surface) {
+                        entry.timebase = timebase
+                    }
+                }
+            }
+        }
     }
 
     override fun release() {
@@ -320,7 +328,6 @@ class OverlayCompositor : ISurfaceProcessorInternal {
             st.updateTexImage()
             st.getTransformMatrix(texMatrix)
             maybeUploadOverlay()
-            val timestampNs = st.timestamp
 
             for (entry in entries) {
                 EGL14.eglMakeCurrent(eglDisplay, entry.eglSurface, entry.eglSurface, eglContext)
@@ -334,7 +341,14 @@ class OverlayCompositor : ISurfaceProcessorInternal {
                 drawCamera(outMatrix)
                 if (hasOverlay) drawOverlay()
 
-                EGLExt.eglPresentationTimeANDROID(eglDisplay, entry.eglSurface, timestampNs)
+                // FIX: Guaranteed monotonic timestamps specifically mapped to StreamPack's required Timebase
+                val ptsNs = when (entry.timebase) {
+                    Timebase.EPOCH -> System.currentTimeMillis() * 1_000_000L
+                    Timebase.BOOTTIME -> android.os.SystemClock.elapsedRealtimeNanos()
+                    else -> System.nanoTime()
+                }
+
+                EGLExt.eglPresentationTimeANDROID(eglDisplay, entry.eglSurface, ptsNs)
                 EGL14.eglSwapBuffers(eglDisplay, entry.eglSurface)
             }
         }
