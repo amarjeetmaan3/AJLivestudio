@@ -1,7 +1,8 @@
 package com.amarjeetmaan.ajlivestudio.ui.camera
 
-import android.view.SurfaceHolder
-import android.view.SurfaceView
+import android.graphics.SurfaceTexture
+import android.view.Surface
+import android.view.TextureView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -61,19 +62,22 @@ fun CameraPreviewScreen(
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
 
-        // Actual Camera Preview Surface (This forces the camera sensor to turn on)
+        // FIX: Replaced SurfaceView with TextureView. 
+        // This guarantees the camera only starts when a valid dimension is available.
         AndroidView(
             factory = { ctx ->
-                SurfaceView(ctx).apply {
-                    holder.addCallback(object : SurfaceHolder.Callback {
-                        override fun surfaceCreated(holder: SurfaceHolder) {
-                            viewModel.startPreview(holder.surface)
+                TextureView(ctx).apply {
+                    surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                        override fun onSurfaceTextureAvailable(st: SurfaceTexture, width: Int, height: Int) {
+                            viewModel.startPreview(Surface(st))
                         }
-                        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
-                        override fun surfaceDestroyed(holder: SurfaceHolder) {
+                        override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, width: Int, height: Int) {}
+                        override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
                             viewModel.stopPreview()
+                            return true
                         }
-                    })
+                        override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+                    }
                 }
             },
             modifier = Modifier.fillMaxSize()
