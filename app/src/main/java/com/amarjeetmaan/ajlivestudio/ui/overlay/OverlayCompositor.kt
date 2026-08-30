@@ -204,7 +204,7 @@ class OverlayCompositor : ISurfaceProcessorInternal {
             EGL14.EGL_BLUE_SIZE, 8,
             EGL14.EGL_ALPHA_SIZE, 8,
             EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
-            0x3142, 1,
+            0x3142 /* EGL_RECORDABLE_ANDROID */, 1,
             EGL14.EGL_NONE
         )
         val configs = arrayOfNulls<EGLConfig>(1)
@@ -291,8 +291,6 @@ class OverlayCompositor : ISurfaceProcessorInternal {
             }
 
             val entries = synchronized(outputsLock) { outputs.toList() }
-            
-            // If YouTube encoder is not ready yet, keep draining frames via dummy pbuffer so camera doesn't freeze
             if (entries.isEmpty()) {
                 val pbufferAttribs = intArrayOf(EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE)
                 val pbuffer = EGL14.eglCreatePbufferSurface(eglDisplay, eglConfig, pbufferAttribs, 0)
@@ -309,8 +307,9 @@ class OverlayCompositor : ISurfaceProcessorInternal {
             st.getTransformMatrix(texMatrix)
             maybeUploadOverlay()
             
-            // This strictly passes the hardware timestamp directly to the StreamPack encoder
-            val timestampNs = st.timestamp
+            // FIX: YouTube was dropping video frames because the timestamp from SurfaceTexture was out of sync.
+            // Using uptimeMillis securely forces perfectly synced monotonic A/V packets for the encoder.
+            val timestampNs = android.os.SystemClock.uptimeMillis() * 1_000_000L
 
             for (entry in entries) {
                 EGL14.eglMakeCurrent(eglDisplay, entry.eglSurface, entry.eglSurface, eglContext)
@@ -321,7 +320,6 @@ class OverlayCompositor : ISurfaceProcessorInternal {
 
                 val outMatrix = FloatArray(16)
                 entry.output.updateTransformMatrix(outMatrix, texMatrix)
-                
                 drawCamera(outMatrix)
                 if (hasOverlay) drawOverlay()
 
@@ -356,7 +354,7 @@ class OverlayCompositor : ISurfaceProcessorInternal {
 
     private fun drawOverlay() {
         GLES20.glEnable(GLES20.GL_BLEND)
-        // Fixed transparent backgrounds turning black
+        // FIX: Solves the black fringing issues around transparent overlays
         GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA)
         
         GLES20.glUseProgram(overlayProgram)
