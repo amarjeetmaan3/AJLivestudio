@@ -18,12 +18,14 @@ import io.github.thibaultbee.streampack.core.streamers.single.cameraSingleStream
 import io.github.thibaultbee.streampack.core.streamers.single.setConfig
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Camera -> custom GPU SurfaceProcessor -> StreamPack encoder -> RTMP.
+ * Camera -> OverlayCompositor -> StreamPack encoder -> RTMP.
  *
- * Screen capture / MediaProjection is intentionally not used here.
+ * Screen capture / MediaProjection is intentionally not used.
  */
 class StreamEngine(private val context: Context) {
     var streamer: SingleStreamer? = null
@@ -31,18 +33,24 @@ class StreamEngine(private val context: Context) {
 
     private var currentCameraId: String = ""
     private var isFront: Boolean = false
+    private var overlayFactory: OverlayCompositor.Factory? = null
 
     suspend fun initializeCamera(videoConfig: EngineVideoConfig, targetRotation: Int? = null) {
         closeCurrentStreamer()
 
-        val cameraId = defaultBackCameraId() ?: throw IllegalStateException("No camera found")
+        val cameraId = defaultBackCameraId()
+            ?: throw IllegalStateException("No back camera found")
+
         currentCameraId = cameraId
         isFront = false
+
+        val factory = OverlayCompositor.Factory()
+        overlayFactory = factory
 
         val newStreamer = cameraSingleStreamer(
             context = context,
             cameraId = cameraId,
-            surfaceProcessorFactory = OverlayCompositor.Factory()
+            surfaceProcessorFactory = factory
         )
 
         targetRotation?.let { newStreamer.setTargetRotation(it) }
@@ -52,6 +60,7 @@ class StreamEngine(private val context: Context) {
             sampleRate = 44_100,
             channelConfig = AudioFormat.CHANNEL_IN_STEREO
         )
+
         val streamPackVideoConfig = VideoConfig(
             startBitrate = videoConfig.bitrateBps,
             resolution = Size(videoConfig.width, videoConfig.height),
@@ -61,17 +70,18 @@ class StreamEngine(private val context: Context) {
         newStreamer.setConfig(audioConfig, streamPackVideoConfig)
         streamer = newStreamer
 
-        withTimeoutOrNull(5_000) {
-            newStreamer.videoInput?.sourceFlow?.filterNotNull()?.first()
-        }
+        // Force resolution of the camera source before camera controls are queried.
+        awaitCameraSource()
     }
 
     fun updateOverlay(bitmap: android.graphics.Bitmap?) {
-        OverlayCompositor.Factory.instance?.setOverlayBitmap(bitmap)
+        overlayFactory?.setOverlayBitmap(bitmap)
     }
 
     suspend fun startCameraPreview(surface: Surface) {
-        streamer?.startPreview(surface)
+        val s = streamer ?: throw IllegalStateException("Streamer is not initialized")
+        s.startPreview(surface)
+        awaitCameraSource()
     }
 
     suspend fun stopCameraPreview() {
@@ -79,8 +89,8 @@ class StreamEngine(private val context: Context) {
     }
 
     suspend fun goLive(rtmpUrl: String) {
-        streamer?.startStream(rtmpUrl)
-            ?: throw IllegalStateException("Streamer is not initialized")
+        val s = streamer ?: throw IllegalStateException("Streamer is not initialized")
+        s.startStream(rtmpUrl)
     }
 
     suspend fun stopLive() {
@@ -90,17 +100,14 @@ class StreamEngine(private val context: Context) {
     suspend fun flipCamera(): Boolean {
         val s = streamer ?: return isFront
         val nextId = if (isFront) defaultBackCameraId() else defaultFrontCameraId()
-        if (nextId == null) return isFront
+            ?: return isFront
 
         runCatching { s.setCameraId(nextId) }
             .getOrElse { return isFront }
 
         currentCameraId = nextId
         isFront = !isFront
-
-        withTimeoutOrNull(5_000) {
-            s.videoInput?.sourceFlow?.filterNotNull()?.first()
-        }
+        awaitCameraSource()
         return isFront
     }
 
@@ -109,40 +116,61 @@ class StreamEngine(private val context: Context) {
             val audioSettings = streamer?.javaClass
                 ?.getMethod("getAudioSettings")
                 ?.invoke(streamer)
+
             audioSettings?.javaClass
                 ?.getMethod("setMuted", Boolean::class.javaPrimitiveType)
                 ?.invoke(audioSettings, muted)
         } catch (_: Exception) {
+            // StreamPack audio muting is optional on some versions/devices.
         }
+    }
+
+    suspend fun awaitCameraSource(timeoutMs: Long = 5_000): ICameraSource? {
+        val s = streamer ?: return null
+        return withTimeoutOrNull(timeoutMs) {
+            s.videoInput.sourceFlow.filterNotNull().first()
+        }
+    }
+
+    suspend fun isTorchAvailableAsync(): Boolean {
+        val source = awaitCameraSource() ?: return false
+        return source.settings.flash.isAvailable
+    }
+
+    suspend fun setTorch(enabled: Boolean) {
+        val source = awaitCameraSource()
+            ?: throw IllegalStateException("Camera source is not ready")
+
+        if (!source.settings.flash.isAvailable) {
+            throw IllegalStateException("Flashlight is not available on this camera")
+        }
+
+        source.settings.flash.setIsEnable(enabled)
     }
 
     fun isFrontCamera(): Boolean = isFront
-
-    fun isTorchAvailable(): Boolean =
-        cameraSource()?.settings?.flash?.isAvailable ?: false
-
-    suspend fun setTorch(enabled: Boolean) {
-        cameraSource()?.settings?.flash?.setIsEnable(enabled)
-    }
-
-    fun close() {
-        try {
-            OverlayCompositor.Factory.instance?.release()
-        } catch (_: Exception) {
-        }
-        OverlayCompositor.Factory.instance = null
-        streamer = null
-    }
 
     private suspend fun closeCurrentStreamer() {
         runCatching { streamer?.stopPreview() }
         runCatching { streamer?.stopStream() }
         runCatching { streamer?.release() }
         streamer = null
+        overlayFactory = null
     }
 
-    private fun cameraSource(): ICameraSource? =
-        streamer?.videoInput?.sourceFlow?.value as? ICameraSource
+    suspend fun release() {
+        runCatching { streamer?.stopPreview() }
+        runCatching { streamer?.stopStream() }
+        runCatching { streamer?.release() }
+        streamer = null
+        overlayFactory = null
+    }
+
+    fun close() {
+        runBlocking(Dispatchers.Default) {
+            release()
+        }
+    }
 
     private fun defaultBackCameraId(): String? =
         findCameraId(CameraCharacteristics.LENS_FACING_BACK)
