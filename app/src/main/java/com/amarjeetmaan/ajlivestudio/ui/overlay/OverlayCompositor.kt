@@ -53,6 +53,7 @@ class OverlayCompositor : ISurfaceProcessorInternal {
     private val texMatrix = FloatArray(16)
     private var frameAvailable = false
     private val frameLock = Object()
+    private var released = false
 
     private var overlayTextureId = 0
     @Volatile private var pendingOverlayBitmap: Bitmap? = null
@@ -74,11 +75,16 @@ class OverlayCompositor : ISurfaceProcessorInternal {
     }
 
     fun setOverlayBitmap(bitmap: Bitmap?) {
+        if (released) return
         pendingOverlayBitmap = bitmap
         overlayBitmapVersion++
+        glHandler.post {
+            if (!released && frameAvailable) drawFrame()
+        }
     }
 
     override fun createInputSurface(surfaceSize: Size, timebase: Timebase): Surface {
+        check(!released) { "OverlayCompositor has been released" }
         this.timebase = timebase
         var result: Surface? = null
         runOnGlThreadBlocking {
@@ -114,7 +120,10 @@ class OverlayCompositor : ISurfaceProcessorInternal {
     override fun addOutputSurface(surfaceOutput: ISurfaceOutput) {
         runOnGlThread {
             val eglSurface = createWindowSurface(surfaceOutput.targetSurface)
-            synchronized(outputsLock) { outputs.add(OutputEntry(surfaceOutput, eglSurface)) }
+            synchronized(outputsLock) {
+                outputs.add(OutputEntry(surfaceOutput, eglSurface))
+            }
+            drawFrame()
         }
     }
 
@@ -162,6 +171,8 @@ class OverlayCompositor : ISurfaceProcessorInternal {
     }
 
     override fun release() {
+        if (released) return
+        released = true
         runOnGlThreadBlocking {
             surfaceTexture?.setOnFrameAvailableListener(null)
             surfaceTexture?.release()
@@ -172,6 +183,16 @@ class OverlayCompositor : ISurfaceProcessorInternal {
                 outputs.forEach { destroyWindowSurface(it.eglSurface) }
                 outputs.clear()
             }
+            if (cameraTextureId != 0) {
+                GLES20.glDeleteTextures(1, intArrayOf(cameraTextureId), 0)
+                cameraTextureId = 0
+            }
+            if (overlayTextureId != 0) {
+                GLES20.glDeleteTextures(1, intArrayOf(overlayTextureId), 0)
+                overlayTextureId = 0
+            }
+            if (cameraProgram != 0) GLES20.glDeleteProgram(cameraProgram)
+            if (overlayProgram != 0) GLES20.glDeleteProgram(overlayProgram)
             releaseEgl()
         }
         glThread.quitSafely()
@@ -285,31 +306,25 @@ class OverlayCompositor : ISurfaceProcessorInternal {
     private fun drawFrame() {
         runOnGlThread {
             val st = surfaceTexture ?: return@runOnGlThread
+            val entries = synchronized(outputsLock) { outputs.toList() }
+
+            // Do not consume a camera buffer until StreamPack has provided an output.
+            // Keep frameAvailable=true so the first frame is rendered as soon as an output arrives.
+            if (entries.isEmpty()) return@runOnGlThread
+
             synchronized(frameLock) {
                 if (!frameAvailable) return@runOnGlThread
                 frameAvailable = false
-            }
-
-            val entries = synchronized(outputsLock) { outputs.toList() }
-            if (entries.isEmpty()) {
-                val pbufferAttribs = intArrayOf(EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE)
-                val pbuffer = EGL14.eglCreatePbufferSurface(eglDisplay, eglConfig, pbufferAttribs, 0)
-                EGL14.eglMakeCurrent(eglDisplay, pbuffer, pbuffer, eglContext)
-                st.updateTexImage()
-                st.getTransformMatrix(texMatrix)
-                EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
-                EGL14.eglDestroySurface(eglDisplay, pbuffer)
-                return@runOnGlThread
             }
 
             EGL14.eglMakeCurrent(eglDisplay, entries[0].eglSurface, entries[0].eglSurface, eglContext)
             st.updateTexImage()
             st.getTransformMatrix(texMatrix)
             maybeUploadOverlay()
-            
-            // FIX: YouTube was dropping video frames because the timestamp from SurfaceTexture was out of sync.
-            // Using uptimeMillis securely forces perfectly synced monotonic A/V packets for the encoder.
-            val timestampNs = android.os.SystemClock.uptimeMillis() * 1_000_000L
+
+            // SurfaceTexture timestamps are in nanoseconds on the Android monotonic clock.
+            // Preserve the camera frame timestamp; do not create a new timestamp from uptimeMillis.
+            val timestampNs = st.timestamp.takeIf { it > 0L } ?: System.nanoTime()
 
             for (entry in entries) {
                 EGL14.eglMakeCurrent(eglDisplay, entry.eglSurface, entry.eglSurface, eglContext)
@@ -324,7 +339,12 @@ class OverlayCompositor : ISurfaceProcessorInternal {
                 if (hasOverlay) drawOverlay()
 
                 EGLExt.eglPresentationTimeANDROID(eglDisplay, entry.eglSurface, timestampNs)
-                EGL14.eglSwapBuffers(eglDisplay, entry.eglSurface)
+                if (!EGL14.eglSwapBuffers(eglDisplay, entry.eglSurface)) {
+                    val error = EGL14.eglGetError()
+                    if (error != EGL14.EGL_SUCCESS && error != EGL14.EGL_BAD_NATIVE_WINDOW) {
+                        // Keep the processor alive; StreamPack may remove a failed output.
+                    }
+                }
             }
         }
     }
