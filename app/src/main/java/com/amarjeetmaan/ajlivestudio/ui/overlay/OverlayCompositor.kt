@@ -46,6 +46,9 @@ class OverlayCompositor : ISurfaceProcessorInternal {
     private var eglDisplay: EGLDisplay = EGL14.EGL_NO_DISPLAY
     private var eglContext: EGLContext = EGL14.EGL_NO_CONTEXT
     private var eglConfig: EGLConfig? = null
+    
+    // FIX: Permanent dummy surface keeps the EGL context alive and prevents Camera API from stalling
+    private var dummyPbuffer: EGLSurface = EGL14.EGL_NO_SURFACE 
 
     private var cameraTextureId = 0
     private var surfaceTexture: SurfaceTexture? = null
@@ -65,8 +68,7 @@ class OverlayCompositor : ISurfaceProcessorInternal {
 
     private data class OutputEntry(
         val output: ISurfaceOutput, 
-        val eglSurface: EGLSurface,
-        var timebase: Timebase = Timebase.UPTIME
+        val eglSurface: EGLSurface
     )
     private val outputs = mutableListOf<OutputEntry>()
     private val outputsLock = Object()
@@ -83,13 +85,11 @@ class OverlayCompositor : ISurfaceProcessorInternal {
     override fun createInputSurface(surfaceSize: Size, timebase: Timebase): Surface {
         var result: Surface? = null
         runOnGlThreadBlocking {
-            val pbufferAttribs = intArrayOf(EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE)
-            val pbuffer = EGL14.eglCreatePbufferSurface(eglDisplay, eglConfig, pbufferAttribs, 0)
-            EGL14.eglMakeCurrent(eglDisplay, pbuffer, pbuffer, eglContext)
-
+            // Ensure texture exists
             if (cameraTextureId == 0) {
                 cameraTextureId = createExternalTexture()
             }
+            
             val st = SurfaceTexture(cameraTextureId)
             st.setDefaultBufferSize(surfaceSize.width, surfaceSize.height)
             st.setOnFrameAvailableListener({
@@ -104,9 +104,6 @@ class OverlayCompositor : ISurfaceProcessorInternal {
             inputSurface?.release()
             inputSurface = surface
             result = surface
-
-            EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
-            EGL14.eglDestroySurface(eglDisplay, pbuffer)
         }
         return result!!
     }
@@ -170,15 +167,7 @@ class OverlayCompositor : ISurfaceProcessorInternal {
     }
 
     override fun setTimebase(surface: Surface, timebase: Timebase) {
-        runOnGlThread {
-            synchronized(outputsLock) {
-                for (entry in outputs) {
-                    if (entry.output.targetSurface == surface) {
-                        entry.timebase = timebase
-                    }
-                }
-            }
-        }
+        // Handled automatically by surfaceTexture.timestamp
     }
 
     override fun release() {
@@ -236,21 +225,25 @@ class OverlayCompositor : ISurfaceProcessorInternal {
         eglContext = EGL14.eglCreateContext(eglDisplay, eglConfig, EGL14.EGL_NO_CONTEXT, ctxAttribs, 0)
         check(eglContext != EGL14.EGL_NO_CONTEXT) { "Unable to create EGL context" }
 
+        // FIX: Create a permanent dummy pbuffer so the context is ALWAYS valid and bound
         val pbufferAttribs = intArrayOf(EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE)
-        val pbuffer = EGL14.eglCreatePbufferSurface(eglDisplay, eglConfig, pbufferAttribs, 0)
-        EGL14.eglMakeCurrent(eglDisplay, pbuffer, pbuffer, eglContext)
+        dummyPbuffer = EGL14.eglCreatePbufferSurface(eglDisplay, eglConfig, pbufferAttribs, 0)
+        
+        EGL14.eglMakeCurrent(eglDisplay, dummyPbuffer, dummyPbuffer, eglContext)
 
         cameraProgram = buildProgram(CAMERA_VERTEX_SHADER, CAMERA_FRAGMENT_SHADER)
         overlayProgram = buildProgram(OVERLAY_VERTEX_SHADER, OVERLAY_FRAGMENT_SHADER)
+        cameraTextureId = createExternalTexture()
         overlayTextureId = create2DTexture()
-
-        EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
-        EGL14.eglDestroySurface(eglDisplay, pbuffer)
     }
 
     private fun releaseEgl() {
         if (eglDisplay != EGL14.EGL_NO_DISPLAY) {
             EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
+            if (dummyPbuffer != EGL14.EGL_NO_SURFACE) {
+                EGL14.eglDestroySurface(eglDisplay, dummyPbuffer)
+                dummyPbuffer = EGL14.EGL_NO_SURFACE
+            }
             EGL14.eglDestroyContext(eglDisplay, eglContext)
             EGL14.eglTerminate(eglDisplay)
         }
@@ -310,42 +303,47 @@ class OverlayCompositor : ISurfaceProcessorInternal {
                 frameAvailable = false
             }
 
-            val entries = synchronized(outputsLock) { outputs.toList() }
-            if (entries.isEmpty()) {
-                val pbufferAttribs = intArrayOf(EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE)
-                val pbuffer = EGL14.eglCreatePbufferSurface(eglDisplay, eglConfig, pbufferAttribs, 0)
-                EGL14.eglMakeCurrent(eglDisplay, pbuffer, pbuffer, eglContext)
+            // FIX: Always ensure context is bound to dummy buffer before updating texture
+            EGL14.eglMakeCurrent(eglDisplay, dummyPbuffer, dummyPbuffer, eglContext)
+            
+            try {
                 st.updateTexImage()
-                st.getTransformMatrix(texMatrix)
-                EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
-                EGL14.eglDestroySurface(eglDisplay, pbuffer)
+            } catch (e: Exception) {
+                e.printStackTrace()
                 return@runOnGlThread
             }
-
-            EGL14.eglMakeCurrent(eglDisplay, entries[0].eglSurface, entries[0].eglSurface, eglContext)
-            st.updateTexImage()
+            
             st.getTransformMatrix(texMatrix)
             maybeUploadOverlay()
-            
-            // FIX: Using the hardware's native monotonic timestamp (st.timestamp) 
-            // which automatically aligns with StreamPack's internal A/V muxer.
             val timestampNs = st.timestamp
 
+            val entries = synchronized(outputsLock) { outputs.toList() }
+
             for (entry in entries) {
-                EGL14.eglMakeCurrent(eglDisplay, entry.eglSurface, entry.eglSurface, eglContext)
+                if (!EGL14.eglMakeCurrent(eglDisplay, entry.eglSurface, entry.eglSurface, eglContext)) {
+                    continue // Skip drawing if surface is temporarily invalid
+                }
+
                 val size = entry.output.targetResolution
-                GLES20.glViewport(0, 0, size.width, size.height)
+                val width = if (size.width > 0) size.width else 1
+                val height = if (size.height > 0) size.height else 1
+                
+                GLES20.glViewport(0, 0, width, height)
                 GLES20.glClearColor(0f, 0f, 0f, 1f)
                 GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
 
                 val outMatrix = FloatArray(16)
                 entry.output.updateTransformMatrix(outMatrix, texMatrix)
+                
                 drawCamera(outMatrix)
                 if (hasOverlay) drawOverlay()
 
                 EGLExt.eglPresentationTimeANDROID(eglDisplay, entry.eglSurface, timestampNs)
                 EGL14.eglSwapBuffers(eglDisplay, entry.eglSurface)
             }
+            
+            // Rebind to dummy buffer to ensure camera keeps pumping frames safely
+            EGL14.eglMakeCurrent(eglDisplay, dummyPbuffer, dummyPbuffer, eglContext)
         }
     }
 
