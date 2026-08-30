@@ -15,12 +15,14 @@ import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.WbAuto
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -51,12 +53,35 @@ fun CameraPreviewScreen(
     var showWbMenu by remember { mutableStateOf(false) }
     var showOverlayPanel by remember { mutableStateOf(false) }
     var showAudioMixer by remember { mutableStateOf(false) }
+    var containerWidthPx by remember { mutableStateOf(0) }
+    var containerHeightPx by remember { mutableStateOf(0) }
 
-    androidx.compose.runtime.LaunchedEffect(Unit) {
+    val overlayItems = overlayViewModel.items.toList()
+
+    LaunchedEffect(setupState) {
         viewModel.initialize(context, setupState)
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+    LaunchedEffect(overlayItems, containerWidthPx, containerHeightPx, uiState.cameraReady) {
+        if (containerWidthPx > 0 && containerHeightPx > 0 && uiState.cameraReady) {
+            viewModel.updateOverlayBitmap(
+                context = context,
+                items = overlayItems,
+                containerWidthPx = containerWidthPx,
+                containerHeightPx = containerHeightPx
+            )
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .onSizeChanged { size ->
+                containerWidthPx = size.width
+                containerHeightPx = size.height
+            }
+    ) {
 
         // --- Live Camera Preview Surface ---
         // EXACTLY AS IT WAS IN YOUR ORIGINAL CODE:
@@ -72,10 +97,12 @@ fun CameraPreviewScreen(
         // -----------------------------------
 
         OverlayLayer(
-            items = overlayViewModel.items,
+            items = overlayItems,
             editable = true,
             webReloadTick = overlayViewModel.webReloadTick,
-            onTransform = { _, _, _, _ -> }
+            onTransform = { id, x, y, scale ->
+                overlayViewModel.updateTransform(id, x, y, scale)
+            }
         )
 
         // Top bar
