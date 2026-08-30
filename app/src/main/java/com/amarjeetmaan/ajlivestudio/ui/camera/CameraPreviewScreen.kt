@@ -207,7 +207,7 @@ fun CameraPreviewScreen(
                     icon = if (uiState.isMicMuted) Icons.Filled.MicOff else Icons.Filled.Mic,
                     label = if (uiState.isMicMuted) "Muted" else "Mic",
                     tint = if (uiState.isMicMuted) CrimsonBright else Color.White,
-                    onClick = { viewModel.toggleMic() }
+                    onClick = { viewModel.toggleMic(context) }
                 )
                 ControlIcon(
                     icon = Icons.Filled.Layers,
@@ -226,7 +226,7 @@ fun CameraPreviewScreen(
             Button(
                 onClick = {
                     if (uiState.streamState == StreamState.LIVE) {
-                        viewModel.stopLive()
+                        viewModel.stopLive(context)
                     } else {
                         viewModel.goLive(rtmpConfig.fullUrl())
                     }
