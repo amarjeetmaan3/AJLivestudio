@@ -26,1333 +26,17 @@ import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import java.util.concurrent.CountDownLatch
 
+/**
+ * GPU compositor used by StreamPack between the camera source and its outputs.
+ *
+ * Camera frames are received through an OES SurfaceTexture. The frame is drawn
+ * directly into every StreamPack output surface and the SurfaceTexture timestamp
+ * is preserved for the encoder. No MediaProjection or screen capture is used.
+ */
 class OverlayCompositor : ISurfaceProcessorInternal {
 
     class Factory : ISurfaceProcessorInternal.Factory {
-
         @Volatile
-        private var processor: OverlayCompositor? = null
-
-        override fun create(
-            dynamicRangeProfile: DynamicRangeProfile,
-            dispatcherProvider: IVideoDispatcherProvider
-        ): ISurfaceProcessorInternal {
-            return OverlayCompositor().also {
-                processor = it
-            }
-        }
-
-        fun setOverlayBitmap(bitmap: Bitmap?) {
-            processor?.setOverlayBitmap(bitmap)
-        }
-    }
-
-    override var isMuted: Boolean = false
-
-    private val glThread =
-        HandlerThread("AJLiveStudio-OverlayGL").apply {
-            start()
-        }
-
-    private val glHandler =
-        Handler(glThread.looper)
-
-    private var eglDisplay =
-        EGL14.EGL_NO_DISPLAY
-
-    private var eglContext =
-        EGL14.EGL_NO_CONTEXT
-
-    private var eglConfig: EGLConfig? = null
-
-    private var eglPbufferSurface =
-        EGL14.EGL_NO_SURFACE
-
-    private var cameraTextureId = 0
-    private var overlayTextureId = 0
-
-    private var surfaceTexture: SurfaceTexture? = null
-    private var inputSurface: Surface? = null
-
-    private var cameraProgram = 0
-    private var overlayProgram = 0
-
-    private val textureMatrix =
-        FloatArray(16)
-
-    private var framePending = false
-    private var released = false
-
-    private var overlayVersion = 0L
-    private var uploadedOverlayVersion = -1L
-
-    private var pendingOverlay: Bitmap? = null
-    private var uploadedOverlay: Bitmap? = null
-
-    private var hasOverlay = false
-
-    private val vertexBuffer: FloatBuffer =
-        createFloatBuffer(
-            floatArrayOf(
-                -1f, -1f,
-                 1f, -1f,
-                -1f,  1f,
-                 1f,  1f
-            )
-        )
-
-    private val cameraTexCoordBuffer: FloatBuffer =
-        createFloatBuffer(
-            floatArrayOf(
-                0f, 1f,
-                1f, 1f,
-                0f, 0f,
-                1f, 0f
-            )
-        )
-
-    private val overlayTexCoordBuffer: FloatBuffer =
-        createFloatBuffer(
-            floatArrayOf(
-                0f, 1f,
-                1f, 1f,
-                0f, 0f,
-                1f, 0f
-            )
-        )
-
-    private data class OutputEntry(
-        val output: ISurfaceOutput,
-        val eglSurface: EGLSurface
-    )
-
-    private val outputs =
-        mutableListOf<OutputEntry>()
-
-    init {
-        runOnGlThreadBlocking {
-            initEgl()
-        }
-    }
-
-    fun setOverlayBitmap(bitmap: Bitmap?) {
-        if (released) return
-
-        val copy = bitmap?.let {
-            runCatching {
-                it.copy(Bitmap.Config.ARGB_8888, false)
-            }.getOrNull()
-        }
-
-        synchronized(this) {
-            pendingOverlay?.let {
-                if (!it.isRecycled) {
-                    it.recycle()
-                }
-            }
-
-            pendingOverlay = copy
-            overlayVersion++
-        }
-
-        glHandler.post {
-            if (!released && framePending && outputs.isNotEmpty()) {
-                renderPendingFrame()
-            }
-        }
-    }
-
-    override fun createInputSurface(
-        surfaceSize: Size,
-        timebase: Timebase
-    ): Surface {
-        check(!released) {
-            "OverlayCompositor is released"
-        }
-
-        var result: Surface? = null
-
-        runOnGlThreadBlocking {
-            check(
-                eglContext != EGL14.EGL_NO_CONTEXT
-            ) {
-                "EGL context is not initialized"
-            }
-
-            if (cameraTextureId == 0) {
-                cameraTextureId =
-                    createExternalTexture()
-            }
-
-            surfaceTexture?.setOnFrameAvailableListener(null)
-            surfaceTexture?.release()
-            surfaceTexture = null
-
-            inputSurface?.release()
-            inputSurface = null
-
-            val st =
-                SurfaceTexture(cameraTextureId)
-
-            st.setDefaultBufferSize(
-                surfaceSize.width,
-                surfaceSize.height
-            )
-
-            st.setOnFrameAvailableListener(
-                {
-                    if (released) return@setOnFrameAvailableListener
-
-                    framePending = true
-                    renderPendingFrame()
-                },
-                glHandler
-            )
-
-            surfaceTexture = st
-            inputSurface = Surface(st)
-
-            result = inputSurface
-        }
-
-        return checkNotNull(result)
-    }
-
-    override fun removeInputSurface(
-        surface: Surface
-    ) {
-        runOnGlThread {
-            if (
-                inputSurface === surface ||
-                inputSurface == surface
-            ) {
-                surfaceTexture
-                    ?.setOnFrameAvailableListener(null)
-
-                surfaceTexture?.release()
-                surfaceTexture = null
-
-                inputSurface?.release()
-                inputSurface = null
-
-                framePending = false
-            }
-        }
-    }
-
-    override fun addOutputSurface(
-        surfaceOutput: ISurfaceOutput
-    ) {
-        runOnGlThread {
-            if (released) return@runOnGlThread
-
-            val targetSurface =
-                surfaceOutput.targetSurface
-
-            val eglSurface =
-                createWindowSurface(targetSurface)
-
-            if (
-                eglSurface ==
-                EGL14.EGL_NO_SURFACE
-            ) {
-                Log.e(
-                    TAG,
-                    "Unable to create EGL output surface: " +
-                        "0x${Integer.toHexString(EGL14.eglGetError())}"
-                )
-                return@runOnGlThread
-            }
-
-            outputs.removeAll { old ->
-                if (old.output === surfaceOutput) {
-                    destroyWindowSurface(
-                        old.eglSurface
-                    )
-                    true
-                } else {
-                    false
-                }
-            }
-
-            outputs += OutputEntry(
-                surfaceOutput,
-                eglSurface
-            )
-
-            if (framePending) {
-                renderPendingFrame()
-            }
-        }
-    }
-
-    override fun removeOutputSurface(
-        surface: Surface
-    ) {
-        runOnGlThread {
-            val iterator =
-                outputs.iterator()
-
-            while (iterator.hasNext()) {
-                val entry = iterator.next()
-
-                if (
-                    entry.output.targetSurface ==
-                    surface
-                ) {
-                    destroyWindowSurface(
-                        entry.eglSurface
-                    )
-                    iterator.remove()
-                }
-            }
-        }
-    }
-
-    override fun removeOutputSurface(
-        surfaceOutput: ISurfaceOutput
-    ) {
-        runOnGlThread {
-            val iterator =
-                outputs.iterator()
-
-            while (iterator.hasNext()) {
-                val entry = iterator.next()
-
-                if (
-                    entry.output === surfaceOutput
-                ) {
-                    destroyWindowSurface(
-                        entry.eglSurface
-                    )
-                    iterator.remove()
-                }
-            }
-        }
-    }
-
-    override fun removeAllOutputSurfaces() {
-        runOnGlThread {
-            outputs.forEach {
-                destroyWindowSurface(
-                    it.eglSurface
-                )
-            }
-
-            outputs.clear()
-        }
-    }
-
-    override fun setTimebase(
-        surface: Surface,
-        timebase: Timebase
-    ) {
-        // The frame timestamp from SurfaceTexture is
-        // preserved for the encoder.
-    }
-
-    override fun release() {
-        if (released) return
-
-        released = true
-
-        runOnGlThreadBlocking {
-            surfaceTexture
-                ?.setOnFrameAvailableListener(null)
-
-            surfaceTexture?.release()
-            surfaceTexture = null
-
-            inputSurface?.release()
-            inputSurface = null
-
-            outputs.forEach {
-                destroyWindowSurface(
-                    it.eglSurface
-                )
-            }
-
-            outputs.clear()
-
-            if (cameraTextureId != 0) {
-                GLES20.glDeleteTextures(
-                    1,
-                    intArrayOf(cameraTextureId),
-                    0
-                )
-                cameraTextureId = 0
-            }
-
-            if (overlayTextureId != 0) {
-                GLES20.glDeleteTextures(
-                    1,
-                    intArrayOf(overlayTextureId),
-                    0
-                )
-                overlayTextureId = 0
-            }
-
-            if (cameraProgram != 0) {
-                GLES20.glDeleteProgram(
-                    cameraProgram
-                )
-                cameraProgram = 0
-            }
-
-            if (overlayProgram != 0) {
-                GLES20.glDeleteProgram(
-                    overlayProgram
-                )
-                overlayProgram = 0
-            }
-
-            pendingOverlay?.let {
-                if (!it.isRecycled) {
-                    it.recycle()
-                }
-            }
-
-            uploadedOverlay?.let {
-                if (!it.isRecycled) {
-                    it.recycle()
-                }
-            }
-
-            pendingOverlay = null
-            uploadedOverlay = null
-
-            releaseEgl()
-        }
-
-        glThread.quitSafely()
-    }
-
-    private fun renderPendingFrame() {
-        if (released) return
-        if (!framePending) return
-
-        val st =
-            surfaceTexture ?: return
-
-        if (outputs.isEmpty()) return
-
-        try {
-            st.updateTexImage()
-            st.getTransformMatrix(textureMatrix)
-
-            val timestampNs = st.timestamp
-
-            framePending = false
-
-            uploadLatestOverlay()
-
-            val snapshot =
-                outputs.toList()
-
-            for (entry in snapshot) {
-                if (released) return
-
-                val madeCurrent =
-                    EGL14.eglMakeCurrent(
-                        eglDisplay,
-                        entry.eglSurface,
-                        entry.eglSurface,
-                        eglContext
-                    )
-
-                if (!madeCurrent) {
-                    Log.e(
-                        TAG,
-                        "eglMakeCurrent failed: " +
-                            "0x${Integer.toHexString(EGL14.eglGetError())}"
-                    )
-                    continue
-                }
-
-                val size =
-                    entry.output.targetResolution
-
-                GLES20.glViewport(
-                    0,
-                    0,
-                    size.width,
-                    size.height
-                )
-
-                GLES20.glDisable(
-                    GLES20.GL_BLEND
-                )
-
-                GLES20.glClearColor(
-                    0f,
-                    0f,
-                    0f,
-                    1f
-                )
-
-                GLES20.glClear(
-                    GLES20.GL_COLOR_BUFFER_BIT
-                )
-
-                val outputMatrix =
-                    FloatArray(16)
-
-                entry.output.updateTransformMatrix(
-                    outputMatrix,
-                    textureMatrix
-                )
-
-                drawCamera(outputMatrix)
-
-                if (hasOverlay) {
-                    drawOverlay()
-                }
-
-                if (timestampNs > 0L) {
-                    EGLExt.eglPresentationTimeANDROID(
-                        eglDisplay,
-                        entry.eglSurface,
-                        timestampNs
-                    )
-                }
-
-                if (
-                    !EGL14.eglSwapBuffers(
-                        eglDisplay,
-                        entry.eglSurface
-                    )
-                ) {
-                    Log.e(
-                        TAG,
-                        "eglSwapBuffers failed: " +
-                            "0x${Integer.toHexString(EGL14.eglGetError())}"
-                    )
-                }
-            }
-
-            EGL14.eglMakeCurrent(
-                eglDisplay,
-                eglPbufferSurface,
-                eglPbufferSurface,
-                eglContext
-            )
-        } catch (t: Throwable) {
-            Log.e(
-                TAG,
-                "Camera/overlay render failed",
-                t
-            )
-        }
-    }
-
-    private fun uploadLatestOverlay() {
-        val bitmap: Bitmap?
-
-        synchronized(this) {
-            if (
-                uploadedOverlayVersion ==
-                overlayVersion
-            ) {
-                return
-            }
-
-            bitmap = pendingOverlay
-            pendingOverlay = null
-
-            uploadedOverlayVersion =
-                overlayVersion
-        }
-
-        if (bitmap == null) {
-            hasOverlay = false
-
-            uploadedOverlay?.let {
-                if (!it.isRecycled) {
-                    it.recycle()
-                }
-            }
-
-            uploadedOverlay = null
-            return
-        }
-
-        if (overlayTextureId == 0) {
-            overlayTextureId =
-                createTexture()
-        }
-
-        GLES20.glBindTexture(
-            GLES20.GL_TEXTURE_2D,
-            overlayTextureId
-        )
-
-        GLES20.glTexParameteri(
-            GLES20.GL_TEXTURE_2D,
-            GLES20.GL_TEXTURE_MIN_FILTER,
-            GLES20.GL_LINEAR
-        )
-
-        GLES20.glTexParameteri(
-            GLES20.GL_TEXTURE_2D,
-            GLES20.GL_TEXTURE_MAG_FILTER,
-            GLES20.GL_LINEAR
-        )
-
-        GLES20.glTexParameteri(
-            GLES20.GL_TEXTURE_2D,
-            GLES20.GL_TEXTURE_WRAP_S,
-            GLES20.GL_CLAMP_TO_EDGE
-        )
-
-        GLES20.glTexParameteri(
-            GLES20.GL_TEXTURE_2D,
-            GLES20.GL_TEXTURE_WRAP_T,
-            GLES20.GL_CLAMP_TO_EDGE
-        )
-
-        GLUtils.texImage2D(
-            GLES20.GL_TEXTURE_2D,
-            0,
-            bitmap,
-            0
-        )
-
-        GLES20.glBindTexture(
-            GLES20.GL_TEXTURE_2D,
-            0
-        )
-
-        uploadedOverlay?.let {
-            if (!it.isRecycled) {
-                it.recycle()
-            }
-        }
-
-        uploadedOverlay = bitmap
-        hasOverlay = true
-    }
-
-    private fun drawCamera(
-        matrix: FloatArray
-    ) {
-        GLES20.glUseProgram(
-            cameraProgram
-        )
-
-        val positionHandle =
-            GLES20.glGetAttribLocation(
-                cameraProgram,
-                "aPosition"
-            )
-
-        val texCoordHandle =
-            GLES20.glGetAttribLocation(
-                cameraProgram,
-                "aTexCoord"
-            )
-
-        val matrixHandle =
-            GLES20.glGetUniformLocation(
-                cameraProgram,
-                "uTexMatrix"
-            )
-
-        val textureHandle =
-            GLES20.glGetUniformLocation(
-                cameraProgram,
-                "uTexture"
-            )
-
-        vertexBuffer.position(0)
-
-        GLES20.glEnableVertexAttribArray(
-            positionHandle
-        )
-
-        GLES20.glVertexAttribPointer(
-            positionHandle,
-            2,
-            GLES20.GL_FLOAT,
-            false,
-            0,
-            vertexBuffer
-        )
-
-        cameraTexCoordBuffer.position(0)
-
-        GLES20.glEnableVertexAttribArray(
-            texCoordHandle
-        )
-
-        GLES20.glVertexAttribPointer(
-            texCoordHandle,
-            2,
-            GLES20.GL_FLOAT,
-            false,
-            0,
-            cameraTexCoordBuffer
-        )
-
-        GLES20.glUniformMatrix4fv(
-            matrixHandle,
-            1,
-            false,
-            matrix,
-            0
-        )
-
-        GLES20.glActiveTexture(
-            GLES20.GL_TEXTURE0
-        )
-
-        GLES20.glBindTexture(
-            GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
-            cameraTextureId
-        )
-
-        GLES20.glUniform1i(
-            textureHandle,
-            0
-        )
-
-        GLES20.glDrawArrays(
-            GLES20.GL_TRIANGLE_STRIP,
-            0,
-            4
-        )
-
-        GLES20.glBindTexture(
-            GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
-            0
-        )
-
-        GLES20.glDisableVertexAttribArray(
-            positionHandle
-        )
-
-        GLES20.glDisableVertexAttribArray(
-            texCoordHandle
-        )
-    }
-
-    private fun drawOverlay() {
-        GLES20.glEnable(
-            GLES20.GL_BLEND
-        )
-
-        GLES20.glBlendFunc(
-            GLES20.GL_SRC_ALPHA,
-            GLES20.GL_ONE_MINUS_SRC_ALPHA
-        )
-
-        GLES20.glUseProgram(
-            overlayProgram
-        )
-
-        val positionHandle =
-            GLES20.glGetAttribLocation(
-                overlayProgram,
-                "aPosition"
-            )
-
-        val texCoordHandle =
-            GLES20.glGetAttribLocation(
-                overlayProgram,
-                "aTexCoord"
-            )
-
-        val textureHandle =
-            GLES20.glGetUniformLocation(
-                overlayProgram,
-                "uTexture"
-            )
-
-        vertexBuffer.position(0)
-
-        GLES20.glEnableVertexAttribArray(
-            positionHandle
-        )
-
-        GLES20.glVertexAttribPointer(
-            positionHandle,
-            2,
-            GLES20.GL_FLOAT,
-            false,
-            0,
-            vertexBuffer
-        )
-
-        overlayTexCoordBuffer.position(0)
-
-        GLES20.glEnableVertexAttribArray(
-            texCoordHandle
-        )
-
-        GLES20.glVertexAttribPointer(
-            texCoordHandle,
-            2,
-            GLES20.GL_FLOAT,
-            false,
-            0,
-            overlayTexCoordBuffer
-        )
-
-        GLES20.glActiveTexture(
-            GLES20.GL_TEXTURE0
-        )
-
-        GLES20.glBindTexture(
-            GLES20.GL_TEXTURE_2D,
-            overlayTextureId
-        )
-
-        GLES20.glUniform1i(
-            textureHandle,
-            0
-        )
-
-        GLES20.glDrawArrays(
-            GLES20.GL_TRIANGLE_STRIP,
-            0,
-            4
-        )
-
-        GLES20.glBindTexture(
-            GLES20.GL_TEXTURE_2D,
-            0
-        )
-
-        GLES20.glDisableVertexAttribArray(
-            positionHandle
-        )
-
-        GLES20.glDisableVertexAttribArray(
-            texCoordHandle
-
-        )
-
-        GLES20.glDisable(
-            GLES20.GL_BLEND
-        )
-    }
-
-    private fun initEgl() {
-        eglDisplay =
-            EGL14.eglGetDisplay(
-                EGL14.EGL_DEFAULT_DISPLAY
-            )
-
-        check(
-            eglDisplay != EGL14.EGL_NO_DISPLAY
-        ) {
-            "Unable to get EGL display"
-        }
-
-        val version =
-            IntArray(2)
-
-        check(
-            EGL14.eglInitialize(
-                eglDisplay,
-                version,
-                0,
-                version,
-                1
-            )
-        ) {
-            "Unable to initialize EGL"
-        }
-
-        val configs =
-            arrayOfNulls<EGLConfig>(1)
-
-        val configCount =
-            IntArray(1)
-
-        val configSpec =
-            intArrayOf(
-                EGL14.EGL_RENDERABLE_TYPE,
-                EGL14.EGL_OPENGL_ES2_BIT,
-                EGL14.EGL_RED_SIZE,
-                8,
-                EGL14.EGL_GREEN_SIZE,
-                8,
-                EGL14.EGL_BLUE_SIZE,
-                8,
-                EGL14.EGL_ALPHA_SIZE,
-                8,
-                EGL14.EGL_NONE
-            )
-
-        check(
-            EGL14.eglChooseConfig(
-                eglDisplay,
-                configSpec,
-                0,
-                configs,
-                0,
-                configs.size,
-                configCount,
-                0
-            )
-        ) {
-            "Unable to choose EGL config"
-        }
-
-        eglConfig =
-            configs[0]
-
-        val contextAttributes =
-            intArrayOf(
-                EGL14.EGL_CONTEXT_CLIENT_VERSION,
-                2,
-                EGL14.EGL_NONE
-            )
-
-        eglContext =
-            EGL14.eglCreateContext(
-                eglDisplay,
-                eglConfig,
-                EGL14.EGL_NO_CONTEXT,
-                contextAttributes,
-                0
-            )
-
-        check(
-            eglContext != EGL14.EGL_NO_CONTEXT
-        ) {
-            "Unable to create EGL context"
-        }
-
-        val pbufferAttributes =
-            intArrayOf(
-                EGL14.EGL_WIDTH,
-                1,
-                EGL14.EGL_HEIGHT,
-                1,
-                EGL14.EGL_NONE
-            )
-
-        eglPbufferSurface =
-            EGL14.eglCreatePbufferSurface(
-                eglDisplay,
-                eglConfig,
-                pbufferAttributes,
-                0
-            )
-
-        check(
-            eglPbufferSurface !=
-                EGL14.EGL_NO_SURFACE
-        ) {
-            "Unable to create EGL pbuffer"
-        }
-
-        check(
-            EGL14.eglMakeCurrent(
-                eglDisplay,
-                eglPbufferSurface,
-                eglPbufferSurface,
-                eglContext
-            )
-        ) {
-            "Unable to make EGL context current"
-        }
-
-        cameraProgram =
-            createProgram(
-                CAMERA_VERTEX_SHADER,
-                CAMERA_FRAGMENT_SHADER
-            )
-
-        overlayProgram =
-            createProgram(
-                OVERLAY_VERTEX_SHADER,
-                OVERLAY_FRAGMENT_SHADER
-            )
-    }
-
-    private fun releaseEgl() {
-        if (
-            eglDisplay ==
-            EGL14.EGL_NO_DISPLAY
-        ) {
-            return
-        }
-
-        EGL14.eglMakeCurrent(
-            eglDisplay,
-            EGL14.EGL_NO_SURFACE,
-            EGL14.EGL_NO_SURFACE,
-            EGL14.EGL_NO_CONTEXT
-        )
-
-        if (
-            eglPbufferSurface !=
-            EGL14.EGL_NO_SURFACE
-        ) {
-            EGL14.eglDestroySurface(
-                eglDisplay,
-                eglPbufferSurface
-            )
-            eglPbufferSurface =
-                EGL14.EGL_NO_SURFACE
-        }
-
-        if (
-            eglContext !=
-            EGL14.EGL_NO_CONTEXT
-        ) {
-            EGL14.eglDestroyContext(
-                eglDisplay,
-                eglContext
-            )
-            eglContext =
-                EGL14.EGL_NO_CONTEXT
-        }
-
-        EGL14.eglTerminate(
-            eglDisplay
-        )
-
-        eglDisplay =
-            EGL14.EGL_NO_DISPLAY
-    }
-
-    private fun createWindowSurface(
-        surface: Surface
-    ): EGLSurface {
-        val attributes =
-            intArrayOf(
-                EGL14.EGL_NONE
-            )
-
-        return EGL14.eglCreateWindowSurface(
-            eglDisplay,
-            eglConfig,
-            surface,
-            attributes,
-            0
-        )
-    }
-
-    private fun destroyWindowSurface(
-        surface: EGLSurface
-    ) {
-        if (
-            surface != EGL14.EGL_NO_SURFACE
-        ) {
-            EGL14.eglDestroySurface(
-                eglDisplay,
-                surface
-            )
-        }
-    }
-
-    private fun createExternalTexture(): Int {
-        val textures =
-            IntArray(1)
-
-        GLES20.glGenTextures(
-            1,
-            textures,
-            0
-        )
-
-        GLES20.glBindTexture(
-            GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
-            textures[0]
-        )
-
-        GLES20.glTexParameteri(
-            GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
-            GLES20.GL_TEXTURE_MIN_FILTER,
-            GLES20.GL_LINEAR
-        )
-
-        GLES20.glTexParameteri(
-            GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
-            GLES20.GL_TEXTURE_MAG_FILTER,
-            GLES20.GL_LINEAR
-        )
-
-        GLES20.glTexParameteri(
-            GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
-            GLES20.GL_TEXTURE_WRAP_S,
-            GLES20.GL_CLAMP_TO_EDGE
-        )
-
-        GLES20.glTexParameteri(
-            GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
-            GLES20.GL_TEXTURE_WRAP_T,
-            GLES20.GL_CLAMP_TO_EDGE
-        )
-
-        GLES20.glBindTexture(
-            GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
-            0
-        )
-
-        return textures[0]
-    }
-
-    private fun createTexture(): Int {
-        val textures =
-            IntArray(1)
-
-        GLES20.glGenTextures(
-            1,
-            textures,
-            0
-        )
-
-        return textures[0]
-    }
-
-    private fun createProgram(
-        vertexSource: String,
-        fragmentSource: String
-    ): Int {
-        val vertexShader =
-            compileShader(
-                GLES20.GL_VERTEX_SHADER,
-                vertexSource
-            )
-
-        val fragmentShader =
-            compileShader(
-                GLES20.GL_FRAGMENT_SHADER,
-                fragmentSource
-            )
-
-        val program =
-            GLES20.glCreateProgram()
-
-        GLES20.glAttachShader(
-            program,
-            vertexShader
-        )
-
-        GLES20.glAttachShader(
-            program,
-            fragmentShader
-        )
-
-        GLES20.glLinkProgram(
-            program
-        )
-
-        val status =
-            IntArray(1)
-
-        GLES20.glGetProgramiv(
-            program,
-            GLES20.GL_LINK_STATUS,
-            status,
-            0
-        )
-
-        if (
-            status[0] == 0
-        ) {
-            val info =
-                GLES20.glGetProgramInfoLog(
-                    program
-                )
-
-            GLES20.glDeleteProgram(
-                program
-            )
-
-            throw IllegalStateException(
-                "GL program link failed: $info"
-            )
-        }
-
-        GLES20.glDeleteShader(
-            vertexShader
-        )
-
-        GLES20.glDeleteShader(
-            fragmentShader
-        )
-
-        return program
-    }
-
-    private fun compileShader(
-        type: Int,
-        source: String
-    ): Int {
-        val shader =
-            GLES20.glCreateShader(type)
-
-        GLES20.glShaderSource(
-            shader,
-            source
-        )
-
-        GLES20.glCompileShader(
-            shader
-        )
-
-        val status =
-            IntArray(1)
-
-        GLES20.glGetShaderiv(
-            shader,
-            GLES20.GL_COMPILE_STATUS,
-            status,
-            0
-        )
-
-        if (
-            status[0] == 0
-        ) {
-            val info =
-                GLES20.glGetShaderInfoLog(
-                    shader
-                )
-
-            GLES20.glDeleteShader(
-                shader
-            )
-
-            throw IllegalStateException(
-                "GL shader compile failed: $info"
-            )
-        }
-
-        return shader
-    }
-
-    private fun runOnGlThread(
-        block: () -> Unit
-    ) {
-        if (released) return
-
-        glHandler.post {
-            if (!released) {
-                block()
-            }
-        }
-    }
-
-    private fun runOnGlThreadBlocking(
-        block: () -> Unit
-    ) {
-        if (
-            Thread.currentThread().name ==
-            glThread.name
-        ) {
-            block()
-            return
-        }
-
-        val latch =
-            CountDownLatch(1)
-
-        var error: Throwable? = null
-
-        glHandler.post {
-            try {
-                block()
-            } catch (t: Throwable) {
-                error = t
-            } finally {
-                latch.countDown()
-            }
-        }
-
-        latch.await()
-
-        error?.let {
-            throw RuntimeException(
-                "GL thread operation failed",
-                it
-            )
-        }
-    }
-
-    private fun createFloatBuffer(
-        values: FloatArray
-    ): FloatBuffer {
-        return ByteBuffer
-            .allocateDirect(
-                values.size * 4
-            )
-            .order(
-                ByteOrder.nativeOrder()
-            )
-            .asFloatBuffer()
-            .apply {
-                put(values)
-                position(0)
-            }
-    }
-
-    companion object {
-        private const val TAG =
-            "OverlayCompositor"
-
-        private const val CAMERA_VERTEX_SHADER = """
-            attribute vec4 aPosition;
-            attribute vec4 aTexCoord;
-            uniform mat4 uTexMatrix;
-            varying vec2 vTexCoord;
-
-            void main() {
-                gl_Position = aPosition;
-                vTexCoord =
-                    (uTexMatrix * aTexCoord).xy;
-            }
-        """
-
-        private const val CAMERA_FRAGMENT_SHADER = """
-            #extension GL_OES_EGL_image_external : require
-
-            precision mediump float;
-
-            uniform samplerExternalOES uTexture;
-            varying vec2 vTexCoord;
-
-            void main() {
-                gl_FragColor =
-                    texture2D(
-                        uTexture,
-                        vTexCoord
-                    );
-            }
-        """
-
-        private const val OVERLAY_VERTEX_SHADER = """
-            attribute vec4 aPosition;
-            attribute vec2 aTexCoord;
-
-            varying vec2 vTexCoord;
-
-            void main() {
-                gl_Position = aPosition;
-                vTexCoord = aTexCoord;
-            }
-        """
-
-        private const val OVERLAY_FRAGMENT_SHADER = """
-            precision mediump float;
-
-            uniform sampler2D uTexture;
-            varying vec2 vTexCoord;
-
-            void main() {
-                gl_FragColor =
-                    texture2D(
-                        uTexture,
-                        vTexCoord
-                    );
-            }
-        """
-    }
-}        @Volatile
         private var processor: OverlayCompositor? = null
 
         override fun create(
@@ -1375,6 +59,7 @@ class OverlayCompositor : ISurfaceProcessorInternal {
     private var eglDisplay: EGLDisplay = EGL14.EGL_NO_DISPLAY
     private var eglContext: EGLContext = EGL14.EGL_NO_CONTEXT
     private var eglConfig: EGLConfig? = null
+    private var eglPbuffer: EGLSurface = EGL14.EGL_NO_SURFACE
 
     private var cameraTextureId = 0
     private var overlayTextureId = 0
@@ -1384,15 +69,15 @@ class OverlayCompositor : ISurfaceProcessorInternal {
     private var cameraProgram = 0
     private var overlayProgram = 0
 
-    private val textureMatrix = FloatArray(16)
     private var framePending = false
     private var released = false
 
+    private var pendingOverlayBitmap: Bitmap? = null
     private var overlayVersion = 0L
     private var uploadedOverlayVersion = -1L
-    private var pendingOverlay: Bitmap? = null
-    private var uploadedOverlay: Bitmap? = null
     private var hasOverlay = false
+
+    private val texMatrix = FloatArray(16)
 
     private data class OutputEntry(
         val output: ISurfaceOutput,
@@ -1401,6 +86,10 @@ class OverlayCompositor : ISurfaceProcessorInternal {
 
     private val outputs = mutableListOf<OutputEntry>()
 
+    private val vertexBuffer = floatBuffer(FULLSCREEN_VERTS)
+    private val cameraTexCoordBuffer = floatBuffer(CAMERA_TEXCOORDS)
+    private val overlayTexCoordBuffer = floatBuffer(OVERLAY_TEXCOORDS)
+
     init {
         runOnGlThreadBlocking { initEgl() }
     }
@@ -1408,24 +97,32 @@ class OverlayCompositor : ISurfaceProcessorInternal {
     fun setOverlayBitmap(bitmap: Bitmap?) {
         if (released) return
 
-        synchronized(this) {
-            pendingOverlay = bitmap
-            overlayVersion++
+        val copy = bitmap?.let {
+            if (it.isRecycled) null else it.copy(Bitmap.Config.ARGB_8888, false)
         }
 
-        glHandler.post {
-            if (!released && framePending && outputs.isNotEmpty()) {
+        runOnGlThread {
+            if (released) {
+                copy?.recycle()
+                return@runOnGlThread
+            }
+
+            pendingOverlayBitmap?.recycle()
+            pendingOverlayBitmap = copy
+            overlayVersion++
+
+            if (framePending && outputs.isNotEmpty()) {
                 renderPendingFrame()
             }
         }
     }
 
-    override fun createInputSurface(surfaceSize: Size, timebase: io.github.thibaultbee.streampack.core.elements.utils.time.Timebase): Surface {
+    override fun createInputSurface(surfaceSize: Size, timebase: Timebase): Surface {
         check(!released) { "OverlayCompositor is released" }
 
         var result: Surface? = null
         runOnGlThreadBlocking {
-            check(eglContext != EGL14.EGL_NO_CONTEXT) { "EGL context is not initialized" }
+            checkEglCurrent()
 
             if (cameraTextureId == 0) {
                 cameraTextureId = createExternalTexture()
@@ -1437,11 +134,15 @@ class OverlayCompositor : ISurfaceProcessorInternal {
 
             val st = SurfaceTexture(cameraTextureId)
             st.setDefaultBufferSize(surfaceSize.width, surfaceSize.height)
-            st.setOnFrameAvailableListener({
-                if (released) return@setOnFrameAvailableListener
-                framePending = true
-                renderPendingFrame()
-            }, glHandler)
+            st.setOnFrameAvailableListener(
+                {
+                    if (!released) {
+                        framePending = true
+                        renderPendingFrame()
+                    }
+                },
+                glHandler
+            )
 
             surfaceTexture = st
             inputSurface = Surface(st)
@@ -1468,11 +169,12 @@ class OverlayCompositor : ISurfaceProcessorInternal {
         runOnGlThread {
             if (released) return@runOnGlThread
 
-            val targetSurface = surfaceOutput.targetSurface
-            val eglSurface = createWindowSurface(targetSurface)
+            checkEglCurrent()
 
+            val target = surfaceOutput.targetSurface
+            val eglSurface = createWindowSurface(target)
             if (eglSurface == EGL14.EGL_NO_SURFACE) {
-                Log.e(TAG, "Unable to create EGL output surface: 0x${Integer.toHexString(EGL14.eglGetError())}")
+                Log.e(TAG, "eglCreateWindowSurface failed: 0x${Integer.toHexString(EGL14.eglGetError())}")
                 return@runOnGlThread
             }
 
@@ -1526,11 +228,10 @@ class OverlayCompositor : ISurfaceProcessorInternal {
         }
     }
 
-    override fun setTimebase(
-        surface: Surface,
-        timebase: io.github.thibaultbee.streampack.core.elements.utils.time.Timebase
-    ) {
-        // StreamPack owns the timebase. The camera SurfaceTexture timestamp is preserved per frame.
+    override fun setTimebase(surface: Surface, timebase: Timebase) {
+        // The input SurfaceTexture timestamp is already the source frame timestamp.
+        // StreamPack owns the selected timebase; we intentionally do not generate a
+        // second timestamp here.
     }
 
     override fun release() {
@@ -1545,6 +246,9 @@ class OverlayCompositor : ISurfaceProcessorInternal {
             inputSurface?.release()
             inputSurface = null
 
+            pendingOverlayBitmap?.recycle()
+            pendingOverlayBitmap = null
+
             outputs.forEach { destroyWindowSurface(it.eglSurface) }
             outputs.clear()
 
@@ -1556,13 +260,12 @@ class OverlayCompositor : ISurfaceProcessorInternal {
                 GLES20.glDeleteTextures(1, intArrayOf(overlayTextureId), 0)
                 overlayTextureId = 0
             }
+
             if (cameraProgram != 0) GLES20.glDeleteProgram(cameraProgram)
             if (overlayProgram != 0) GLES20.glDeleteProgram(overlayProgram)
-
             cameraProgram = 0
             overlayProgram = 0
-            pendingOverlay = null
-            uploadedOverlay = null
+
             releaseEgl()
         }
 
@@ -1570,156 +273,175 @@ class OverlayCompositor : ISurfaceProcessorInternal {
     }
 
     private fun renderPendingFrame() {
-        if (released || !framePending) return
+        if (released || !framePending || outputs.isEmpty()) return
+
         val st = surfaceTexture ?: return
-        if (outputs.isEmpty()) return
 
-        try {
-            // Consume exactly one latest camera buffer on the GL thread.
-            st.updateTexImage()
-            st.getTransformMatrix(textureMatrix)
-            val timestampNs = st.timestamp
+        checkEglCurrent()
 
-            framePending = false
-            uploadLatestOverlay()
+        // Do not consume the frame until an output exists. This prevents the camera
+        // buffer queue from being drained while StreamPack is still attaching its
+        // preview/encoder surface.
+        st.updateTexImage()
+        st.getTransformMatrix(texMatrix)
+        val timestampNs = st.timestamp
+        framePending = false
 
-            val snapshot = outputs.toList()
-            for (entry in snapshot) {
-                if (released) return
+        if (timestampNs <= 0L) {
+            Log.w(TAG, "SurfaceTexture returned invalid timestamp; dropping frame")
+            return
+        }
 
-                if (!EGL14.eglMakeCurrent(
-                        eglDisplay,
-                        entry.eglSurface,
-                        entry.eglSurface,
-                        eglContext
-                    )
-                ) {
-                    Log.e(TAG, "eglMakeCurrent failed: 0x${Integer.toHexString(EGL14.eglGetError())}")
-                    continue
-                }
+        maybeUploadOverlay()
 
-                val size = entry.output.targetResolution
-                GLES20.glViewport(0, 0, size.width, size.height)
-                GLES20.glDisable(GLES20.GL_BLEND)
-                GLES20.glClearColor(0f, 0f, 0f, 1f)
-                GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-
-                val outputMatrix = FloatArray(16)
-                entry.output.updateTransformMatrix(outputMatrix, textureMatrix)
-
-                drawCamera(outputMatrix)
-                if (hasOverlay) drawOverlay()
-
-                // SurfaceTexture.timestamp is the timestamp belonging to this camera frame.
-                // Pass it unchanged to the encoder surface.
-                if (timestampNs > 0L) {
-                    EGLExt.eglPresentationTimeANDROID(
-                        eglDisplay,
-                        entry.eglSurface,
-                        timestampNs
-                    )
-                }
-
-                if (!EGL14.eglSwapBuffers(eglDisplay, entry.eglSurface)) {
-                    val error = EGL14.eglGetError()
-                    if (error != EGL14.EGL_SUCCESS && error != EGL14.EGL_BAD_NATIVE_WINDOW) {
-                        Log.e(TAG, "eglSwapBuffers failed: 0x${Integer.toHexString(error)}")
-                    }
-                }
+        val snapshot = outputs.toList()
+        for (entry in snapshot) {
+            if (EGL14.eglMakeCurrent(
+                    eglDisplay,
+                    entry.eglSurface,
+                    entry.eglSurface,
+                    eglContext
+                ).not()) {
+                Log.e(TAG, "eglMakeCurrent(output) failed: 0x${Integer.toHexString(EGL14.eglGetError())}")
+                continue
             }
-        } catch (t: Throwable) {
-            Log.e(TAG, "GPU frame processing failed", t)
-            // Do not kill the GL thread. StreamPack can continue delivering later frames.
+
+            val size = entry.output.targetResolution
+            GLES20.glViewport(0, 0, size.width, size.height)
+            GLES20.glDisable(GLES20.GL_SCISSOR_TEST)
+            GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+            GLES20.glClearColor(0f, 0f, 0f, 1f)
+            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+
+            val outputMatrix = FloatArray(16)
+            entry.output.updateTransformMatrix(outputMatrix, texMatrix)
+
+            drawCamera(outputMatrix)
+            if (hasOverlay) {
+                drawOverlay()
+            }
+
+            EGLExt.eglPresentationTimeANDROID(
+                eglDisplay,
+                entry.eglSurface,
+                timestampNs
+            )
+
+            if (!EGL14.eglSwapBuffers(eglDisplay, entry.eglSurface)) {
+                Log.e(TAG, "eglSwapBuffers failed: 0x${Integer.toHexString(EGL14.eglGetError())}")
+            }
+        }
+
+        // Keep the EGL context current on the GL thread for the next callback.
+        if (outputs.isNotEmpty()) {
+            val last = outputs.last().eglSurface
+            EGL14.eglMakeCurrent(eglDisplay, last, last, eglContext)
         }
     }
 
-    private fun uploadLatestOverlay() {
-        val version: Long
-        val bitmap: Bitmap?
-        synchronized(this) {
-            version = overlayVersion
-            bitmap = pendingOverlay
-        }
+    private fun maybeUploadOverlay() {
+        if (overlayVersion == uploadedOverlayVersion) return
 
-        if (version == uploadedOverlayVersion) return
-        uploadedOverlayVersion = version
-
+        val bitmap = pendingOverlayBitmap
         if (bitmap == null || bitmap.isRecycled) {
             hasOverlay = false
-            uploadedOverlay?.let { if (!it.isRecycled) it.recycle() }
-            uploadedOverlay = null
+            uploadedOverlayVersion = overlayVersion
             return
         }
 
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, overlayTextureId)
+        GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 4)
         GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
-        hasOverlay = true
 
-        val old = uploadedOverlay
-        uploadedOverlay = bitmap
-        if (old != null && old !== bitmap && !old.isRecycled) {
-            old.recycle()
-        }
+        hasOverlay = true
+        uploadedOverlayVersion = overlayVersion
     }
 
     private fun drawCamera(matrix: FloatArray) {
-        GLES20.glUseProgram(cameraProgram)
         GLES20.glDisable(GLES20.GL_BLEND)
+        GLES20.glUseProgram(cameraProgram)
 
-        val positionLocation = GLES20.glGetAttribLocation(cameraProgram, "aPosition")
-        val textureLocation = GLES20.glGetAttribLocation(cameraProgram, "aTextureCoord")
-        val matrixLocation = GLES20.glGetUniformLocation(cameraProgram, "uTexMatrix")
-        val samplerLocation = GLES20.glGetUniformLocation(cameraProgram, "sTexture")
+        val positionLoc = GLES20.glGetAttribLocation(cameraProgram, "aPosition")
+        val texCoordLoc = GLES20.glGetAttribLocation(cameraProgram, "aTextureCoord")
+        val matrixLoc = GLES20.glGetUniformLocation(cameraProgram, "uTexMatrix")
+        val samplerLoc = GLES20.glGetUniformLocation(cameraProgram, "sTexture")
 
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, cameraTextureId)
-        GLES20.glUniform1i(samplerLocation, 0)
-        GLES20.glUniformMatrix4fv(matrixLocation, 1, false, matrix, 0)
+        GLES20.glUniform1i(samplerLoc, 0)
+        GLES20.glUniformMatrix4fv(matrixLoc, 1, false, matrix, 0)
 
         vertexBuffer.position(0)
-        GLES20.glVertexAttribPointer(positionLocation, 2, GLES20.GL_FLOAT, false, 0, vertexBuffer)
-        GLES20.glEnableVertexAttribArray(positionLocation)
+        GLES20.glVertexAttribPointer(
+            positionLoc,
+            2,
+            GLES20.GL_FLOAT,
+            false,
+            0,
+            vertexBuffer
+        )
+        GLES20.glEnableVertexAttribArray(positionLoc)
 
         cameraTexCoordBuffer.position(0)
-        GLES20.glVertexAttribPointer(textureLocation, 2, GLES20.GL_FLOAT, false, 0, cameraTexCoordBuffer)
-        GLES20.glEnableVertexAttribArray(textureLocation)
+        GLES20.glVertexAttribPointer(
+            texCoordLoc,
+            4,
+            GLES20.GL_FLOAT,
+            false,
+            0,
+            cameraTexCoordBuffer
+        )
+        GLES20.glEnableVertexAttribArray(texCoordLoc)
 
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
 
-        GLES20.glDisableVertexAttribArray(positionLocation)
-        GLES20.glDisableVertexAttribArray(textureLocation)
+        GLES20.glDisableVertexAttribArray(positionLoc)
+        GLES20.glDisableVertexAttribArray(texCoordLoc)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
     }
 
     private fun drawOverlay() {
-        GLES20.glUseProgram(overlayProgram)
         GLES20.glEnable(GLES20.GL_BLEND)
-        // Android Bitmap uses straight alpha.
-        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        GLES20.glUseProgram(overlayProgram)
 
-        val positionLocation = GLES20.glGetAttribLocation(overlayProgram, "aPosition")
-        val textureLocation = GLES20.glGetAttribLocation(overlayProgram, "aTextureCoord")
-        val samplerLocation = GLES20.glGetUniformLocation(overlayProgram, "sTexture")
+        val positionLoc = GLES20.glGetAttribLocation(overlayProgram, "aPosition")
+        val texCoordLoc = GLES20.glGetAttribLocation(overlayProgram, "aTextureCoord")
+        val samplerLoc = GLES20.glGetUniformLocation(overlayProgram, "sTexture")
 
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, overlayTextureId)
-        GLES20.glUniform1i(samplerLocation, 0)
+        GLES20.glUniform1i(samplerLoc, 0)
 
         vertexBuffer.position(0)
-        GLES20.glVertexAttribPointer(positionLocation, 2, GLES20.GL_FLOAT, false, 0, vertexBuffer)
-        GLES20.glEnableVertexAttribArray(positionLocation)
+        GLES20.glVertexAttribPointer(
+            positionLoc,
+            2,
+            GLES20.GL_FLOAT,
+            false,
+            0,
+            vertexBuffer
+        )
+        GLES20.glEnableVertexAttribArray(positionLoc)
 
         overlayTexCoordBuffer.position(0)
-        GLES20.glVertexAttribPointer(textureLocation, 2, GLES20.GL_FLOAT, false, 0, overlayTexCoordBuffer)
-        GLES20.glEnableVertexAttribArray(textureLocation)
+        GLES20.glVertexAttribPointer(
+            texCoordLoc,
+            2,
+            GLES20.GL_FLOAT,
+            false,
+            0,
+            overlayTexCoordBuffer
+        )
+        GLES20.glEnableVertexAttribArray(texCoordLoc)
 
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
 
-        GLES20.glDisableVertexAttribArray(positionLocation)
-        GLES20.glDisableVertexAttribArray(textureLocation)
-        GLES20.glDisable(GLES20.GL_BLEND)
+        GLES20.glDisableVertexAttribArray(positionLoc)
+        GLES20.glDisableVertexAttribArray(texCoordLoc)
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
+        GLES20.glDisable(GLES20.GL_BLEND)
     }
 
     private fun initEgl() {
@@ -1743,10 +465,20 @@ class OverlayCompositor : ISurfaceProcessorInternal {
 
         val configs = arrayOfNulls<EGLConfig>(1)
         val count = IntArray(1)
-        check(EGL14.eglChooseConfig(eglDisplay, configAttributes, 0, configs, 0, 1, count, 0)) {
-            "eglChooseConfig failed"
+        check(EGL14.eglChooseConfig(
+            eglDisplay,
+            configAttributes,
+            0,
+            configs,
+            0,
+            1,
+            count,
+            0
+        ) && count[0] > 0) {
+            "Unable to choose EGL config"
         }
-        eglConfig = configs[0] ?: error("No EGLConfig available")
+
+        eglConfig = configs[0] ?: error("EGL config is null")
 
         val contextAttributes = intArrayOf(
             EGL14.EGL_CONTEXT_CLIENT_VERSION, 2,
@@ -1766,15 +498,15 @@ class OverlayCompositor : ISurfaceProcessorInternal {
             EGL14.EGL_HEIGHT, 1,
             EGL14.EGL_NONE
         )
-        val pbuffer = EGL14.eglCreatePbufferSurface(
+        eglPbuffer = EGL14.eglCreatePbufferSurface(
             eglDisplay,
             eglConfig,
             pbufferAttributes,
             0
         )
-        check(pbuffer != EGL14.EGL_NO_SURFACE) { "Unable to create EGL pbuffer" }
+        check(eglPbuffer != EGL14.EGL_NO_SURFACE) { "Unable to create EGL pbuffer" }
 
-        check(EGL14.eglMakeCurrent(eglDisplay, pbuffer, pbuffer, eglContext)) {
+        check(EGL14.eglMakeCurrent(eglDisplay, eglPbuffer, eglPbuffer, eglContext)) {
             "Unable to make EGL context current"
         }
 
@@ -1784,52 +516,118 @@ class OverlayCompositor : ISurfaceProcessorInternal {
 
         EGL14.eglMakeCurrent(
             eglDisplay,
-            EGL14.EGL_NO_SURFACE,
-            EGL14.EGL_NO_SURFACE,
-            EGL14.EGL_NO_CONTEXT
+            eglPbuffer,
+            eglPbuffer,
+            eglContext
         )
-        EGL14.eglDestroySurface(eglDisplay, pbuffer)
+    }
+
+    private fun checkEglCurrent() {
+        if (eglDisplay == EGL14.EGL_NO_DISPLAY || eglContext == EGL14.EGL_NO_CONTEXT) {
+            error("EGL has already been released")
+        }
+
+        if (EGL14.eglGetCurrentContext() != eglContext ||
+            EGL14.eglGetCurrentSurface(EGL14.EGL_DRAW) == EGL14.EGL_NO_SURFACE
+        ) {
+            check(eglPbuffer != EGL14.EGL_NO_SURFACE) { "EGL pbuffer is not available" }
+            check(EGL14.eglMakeCurrent(eglDisplay, eglPbuffer, eglPbuffer, eglContext)) {
+                "Unable to restore EGL context"
+            }
+        }
     }
 
     private fun createWindowSurface(surface: Surface): EGLSurface {
-        val result = EGL14.eglCreateWindowSurface(
+        val config = eglConfig ?: error("EGL config is not initialized")
+        return EGL14.eglCreateWindowSurface(
             eglDisplay,
-            checkNotNull(eglConfig),
+            config,
             surface,
             intArrayOf(EGL14.EGL_NONE),
             0
         )
-        return result
     }
 
     private fun destroyWindowSurface(surface: EGLSurface) {
-        if (surface != EGL14.EGL_NO_SURFACE && eglDisplay != EGL14.EGL_NO_DISPLAY) {
+        if (surface != EGL14.EGL_NO_SURFACE) {
             EGL14.eglDestroySurface(eglDisplay, surface)
         }
     }
 
     private fun createExternalTexture(): Int {
-        val texture = IntArray(1)
-        GLES20.glGenTextures(1, texture, 0)
-        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texture[0])
-        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
-        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
-        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
-        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+        val textures = IntArray(1)
+        GLES20.glGenTextures(1, textures, 0)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textures[0])
+        GLES20.glTexParameteri(
+            GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+            GLES20.GL_TEXTURE_MIN_FILTER,
+            GLES20.GL_LINEAR
+        )
+        GLES20.glTexParameteri(
+            GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+            GLES20.GL_TEXTURE_MAG_FILTER,
+            GLES20.GL_LINEAR
+        )
+        GLES20.glTexParameteri(
+            GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+            GLES20.GL_TEXTURE_WRAP_S,
+            GLES20.GL_CLAMP_TO_EDGE
+        )
+        GLES20.glTexParameteri(
+            GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+            GLES20.GL_TEXTURE_WRAP_T,
+            GLES20.GL_CLAMP_TO_EDGE
+        )
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
-        return texture[0]
+        return textures[0]
     }
 
     private fun create2DTexture(): Int {
-        val texture = IntArray(1)
-        GLES20.glGenTextures(1, texture, 0)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texture[0])
+        val textures = IntArray(1)
+        GLES20.glGenTextures(1, textures, 0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textures[0])
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
-        return texture[0]
+        return textures[0]
+    }
+
+    private fun buildProgram(vertexSource: String, fragmentSource: String): Int {
+        val vertexShader = compileShader(GLES20.GL_VERTEX_SHADER, vertexSource)
+        val fragmentShader = compileShader(GLES20.GL_FRAGMENT_SHADER, fragmentSource)
+        val program = GLES20.glCreateProgram()
+        GLES20.glAttachShader(program, vertexShader)
+        GLES20.glAttachShader(program, fragmentShader)
+        GLES20.glLinkProgram(program)
+
+        val linked = IntArray(1)
+        GLES20.glGetProgramiv(program, GLES20.GL_LINK_STATUS, linked, 0)
+        GLES20.glDeleteShader(vertexShader)
+        GLES20.glDeleteShader(fragmentShader)
+
+        if (linked[0] == 0) {
+            val log = GLES20.glGetProgramInfoLog(program)
+            GLES20.glDeleteProgram(program)
+            error("GL program link failed: $log")
+        }
+        return program
+    }
+
+    private fun compileShader(type: Int, source: String): Int {
+        val shader = GLES20.glCreateShader(type)
+        GLES20.glShaderSource(shader, source)
+        GLES20.glCompileShader(shader)
+
+        val compiled = IntArray(1)
+        GLES20.glGetShaderiv(shader, GLES20.GL_COMPILE_STATUS, compiled, 0)
+        if (compiled[0] == 0) {
+            val log = GLES20.glGetShaderInfoLog(shader)
+            GLES20.glDeleteShader(shader)
+            error("GL shader compile failed: $log")
+        }
+        return shader
     }
 
     private fun releaseEgl() {
@@ -1840,6 +638,10 @@ class OverlayCompositor : ISurfaceProcessorInternal {
                 EGL14.EGL_NO_SURFACE,
                 EGL14.EGL_NO_CONTEXT
             )
+            if (eglPbuffer != EGL14.EGL_NO_SURFACE) {
+                EGL14.eglDestroySurface(eglDisplay, eglPbuffer)
+                eglPbuffer = EGL14.EGL_NO_SURFACE
+            }
             if (eglContext != EGL14.EGL_NO_CONTEXT) {
                 EGL14.eglDestroyContext(eglDisplay, eglContext)
             }
@@ -1850,53 +652,22 @@ class OverlayCompositor : ISurfaceProcessorInternal {
         eglConfig = null
     }
 
-    private fun loadShader(type: Int, source: String): Int {
-        val shader = GLES20.glCreateShader(type)
-        GLES20.glShaderSource(shader, source)
-        GLES20.glCompileShader(shader)
-
-        val status = IntArray(1)
-        GLES20.glGetShaderiv(shader, GLES20.GL_COMPILE_STATUS, status, 0)
-        if (status[0] == 0) {
-            val log = GLES20.glGetShaderInfoLog(shader)
-            GLES20.glDeleteShader(shader)
-            error("Shader compile failed: $log")
-        }
-        return shader
-    }
-
-    private fun buildProgram(vertexSource: String, fragmentSource: String): Int {
-        val vertexShader = loadShader(GLES20.GL_VERTEX_SHADER, vertexSource)
-        val fragmentShader = loadShader(GLES20.GL_FRAGMENT_SHADER, fragmentSource)
-
-        val program = GLES20.glCreateProgram()
-        GLES20.glAttachShader(program, vertexShader)
-        GLES20.glAttachShader(program, fragmentShader)
-        GLES20.glLinkProgram(program)
-
-        GLES20.glDeleteShader(vertexShader)
-        GLES20.glDeleteShader(fragmentShader)
-
-        val status = IntArray(1)
-        GLES20.glGetProgramiv(program, GLES20.GL_LINK_STATUS, status, 0)
-        if (status[0] == 0) {
-            val log = GLES20.glGetProgramInfoLog(program)
-            GLES20.glDeleteProgram(program)
-            error("Program link failed: $log")
-        }
-        return program
-    }
-
     private fun runOnGlThread(block: () -> Unit) {
-        if (Thread.currentThread() === glThread) {
+        if (Thread.currentThread() == glThread) {
             block()
         } else {
-            glHandler.post(block)
+            glHandler.post {
+                try {
+                    block()
+                } catch (t: Throwable) {
+                    Log.e(TAG, "GL operation failed", t)
+                }
+            }
         }
     }
 
     private fun runOnGlThreadBlocking(block: () -> Unit) {
-        if (Thread.currentThread() === glThread) {
+        if (Thread.currentThread() == glThread) {
             block()
             return
         }
@@ -1916,56 +687,51 @@ class OverlayCompositor : ISurfaceProcessorInternal {
         failure?.let { throw RuntimeException(it) }
     }
 
+    private fun floatBuffer(values: FloatArray): FloatBuffer {
+        return ByteBuffer
+            .allocateDirect(values.size * 4)
+            .order(ByteOrder.nativeOrder())
+            .asFloatBuffer()
+            .apply {
+                put(values)
+                position(0)
+            }
+    }
+
     companion object {
-        private const val TAG = "OverlayCompositor"
+        private const val TAG = "AJLiveOverlay"
         private const val EGL_RECORDABLE_ANDROID = 0x3142
 
-        private val FULLSCREEN_VERTICES = floatBuffer(
-            floatArrayOf(
-                -1f, -1f,
-                 1f, -1f,
-                -1f,  1f,
-                 1f,  1f
-            )
+        private val FULLSCREEN_VERTS = floatArrayOf(
+            -1f, -1f,
+             1f, -1f,
+            -1f,  1f,
+             1f,  1f
         )
 
-        // Exactly four vec2 coordinates. The previous implementation used vec4 data here,
-        // which produced invalid OES sampling coordinates.
-        private val CAMERA_TEXTURE_COORDS = floatBuffer(
-            floatArrayOf(
-                0f, 1f,
-                1f, 1f,
-                0f, 0f,
-                1f, 0f
-            )
+        // vec4 coordinates required by the SurfaceTexture matrix.
+        private val CAMERA_TEXCOORDS = floatArrayOf(
+            0f, 0f, 0f, 1f,
+            1f, 0f, 0f, 1f,
+            0f, 1f, 0f, 1f,
+            1f, 1f, 0f, 1f
         )
 
-        private val OVERLAY_TEXTURE_COORDS = floatBuffer(
-            floatArrayOf(
-                0f, 1f,
-                1f, 1f,
-                0f, 0f,
-                1f, 0f
-            )
+        private val OVERLAY_TEXCOORDS = floatArrayOf(
+            0f, 1f,
+            1f, 1f,
+            0f, 0f,
+            1f, 0f
         )
-
-        private fun floatBuffer(data: FloatArray): FloatBuffer =
-            ByteBuffer.allocateDirect(data.size * 4)
-                .order(ByteOrder.nativeOrder())
-                .asFloatBuffer()
-                .apply {
-                    put(data)
-                    position(0)
-                }
 
         private const val CAMERA_VERTEX_SHADER = """
             attribute vec4 aPosition;
-            attribute vec2 aTextureCoord;
+            attribute vec4 aTextureCoord;
             uniform mat4 uTexMatrix;
             varying vec2 vTextureCoord;
             void main() {
                 gl_Position = aPosition;
-                vTextureCoord = (uTexMatrix * vec4(aTextureCoord, 0.0, 1.0)).xy;
+                vTextureCoord = (uTexMatrix * aTextureCoord).xy;
             }
         """
 
