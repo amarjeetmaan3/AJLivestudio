@@ -1,5 +1,8 @@
 package com.amarjeetmaan.ajlivestudio.ui.camera
 
+import android.graphics.SurfaceTexture
+import android.view.Surface
+import android.view.TextureView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -22,11 +25,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.amarjeetmaan.ajlivestudio.ui.live.RtmpConfig
 import com.amarjeetmaan.ajlivestudio.ui.overlay.OverlayLayer
@@ -49,26 +52,32 @@ fun CameraPreviewScreen(
 ) {
     val context = LocalContext.current
     val uiState = viewModel.uiState
+    val overlayItems = overlayViewModel.items.toList()
 
     var showWbMenu by remember { mutableStateOf(false) }
     var showOverlayPanel by remember { mutableStateOf(false) }
     var showAudioMixer by remember { mutableStateOf(false) }
-    var containerWidthPx by remember { mutableStateOf(0) }
-    var containerHeightPx by remember { mutableStateOf(0) }
+    var showStopLiveDialog by remember { mutableStateOf(false) }
 
-    val overlayItems = overlayViewModel.items.toList()
+    var previewWidthPx by remember { mutableStateOf(0) }
+    var previewHeightPx by remember { mutableStateOf(0) }
 
     LaunchedEffect(setupState) {
         viewModel.initialize(context, setupState)
     }
 
-    LaunchedEffect(overlayItems, containerWidthPx, containerHeightPx, uiState.cameraReady) {
-        if (containerWidthPx > 0 && containerHeightPx > 0 && uiState.cameraReady) {
+    LaunchedEffect(
+        overlayItems,
+        previewWidthPx,
+        previewHeightPx,
+        uiState.cameraReady
+    ) {
+        if (previewWidthPx > 0 && previewHeightPx > 0 && uiState.cameraReady) {
             viewModel.updateOverlayBitmap(
                 context = context,
                 items = overlayItems,
-                containerWidthPx = containerWidthPx,
-                containerHeightPx = containerHeightPx
+                containerWidthPx = previewWidthPx,
+                containerHeightPx = previewHeightPx
             )
         }
     }
@@ -77,25 +86,56 @@ fun CameraPreviewScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
-            .onSizeChanged { size ->
-                containerWidthPx = size.width
-                containerHeightPx = size.height
-            }
     ) {
+        // Real StreamPack preview surface. The same SurfaceProcessor also receives
+        // the encoder output, so the camera path is not a fake Compose placeholder.
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { ctx ->
+                TextureView(ctx).apply {
+                    surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                        override fun onSurfaceTextureAvailable(
+                            surfaceTexture: SurfaceTexture,
+                            width: Int,
+                            height: Int
+                        ) {
+                            previewWidthPx = width
+                            previewHeightPx = height
+                            viewModel.startPreview(Surface(surfaceTexture))
+                        }
 
-        // --- Live Camera Preview Surface ---
-        // EXACTLY AS IT WAS IN YOUR ORIGINAL CODE:
-        // StreamPack limits simultaneous outputs, so the preview is a placeholder
-        // to ensure the RTMP feed doesn't break.
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text(
-                if (uiState.cameraReady) "Camera ready — live preview coming soon" else "Initializing camera…",
-                color = Color.White.copy(alpha = 0.4f),
-                style = MaterialTheme.typography.bodyMedium,
-            )
-        }
-        // -----------------------------------
+                        override fun onSurfaceTextureSizeChanged(
+                            surfaceTexture: SurfaceTexture,
+                            width: Int,
+                            height: Int
+                        ) {
+                            previewWidthPx = width
+                            previewHeightPx = height
+                        }
 
+                        override fun onSurfaceTextureDestroyed(
+                            surfaceTexture: SurfaceTexture
+                        ): Boolean {
+                            viewModel.stopPreview()
+                            previewWidthPx = 0
+                            previewHeightPx = 0
+                            return true
+                        }
+
+                        override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) = Unit
+                    }
+                }
+            },
+            update = { textureView ->
+                textureView.surfaceTexture?.let {
+                    previewWidthPx = textureView.width
+                    previewHeightPx = textureView.height
+                }
+            }
+        )
+
+        // Compose copy of the overlay for editing/interaction.
+        // The actual broadcast copy is generated by OverlayRenderer and composited by GLES.
         OverlayLayer(
             items = overlayItems,
             editable = true,
@@ -117,11 +157,15 @@ fun CameraPreviewScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 10.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                TextButton(onClick = onBack, enabled = uiState.streamState != StreamState.LIVE) {
+                TextButton(
+                    onClick = onBack,
+                    enabled = uiState.streamState != StreamState.LIVE
+                ) {
                     Text("← Setup", color = Color.White)
                 }
+
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     val (dotColor, label) = when (uiState.streamState) {
                         StreamState.IDLE -> Color.Gray to "Not live"
@@ -129,9 +173,19 @@ fun CameraPreviewScreen(
                         StreamState.LIVE -> LiveGreen to "LIVE"
                         StreamState.ERROR -> CrimsonBright to "Error"
                     }
-                    Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(dotColor))
+
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(dotColor)
+                    )
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text(label, color = Color.White, style = MaterialTheme.typography.labelSmall)
+                    Text(
+                        label,
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelSmall
+                    )
                     Spacer(modifier = Modifier.width(10.dp))
                     Text(
                         "${setupState.resolution.label} · ${setupState.frameRate.value}fps",
@@ -163,44 +217,73 @@ fun CameraPreviewScreen(
                 .background(NavyDeep.copy(alpha = 0.8f))
                 .padding(bottom = 16.dp, top = 10.dp)
         ) {
-            // Exposure slider
             Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text("EV", color = Color.White, style = MaterialTheme.typography.labelSmall)
                 Slider(
                     value = uiState.exposureIndex.toFloat(),
                     onValueChange = { viewModel.setExposure(it.roundToInt()) },
-                    valueRange = uiState.exposureMin.toFloat()..(if (uiState.exposureMax > uiState.exposureMin) uiState.exposureMax.toFloat() else uiState.exposureMin.toFloat() + 1f),
-                    colors = SliderDefaults.colors(thumbColor = GoldPrimary, activeTrackColor = GoldPrimary),
-                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
+                    valueRange = uiState.exposureMin.toFloat()..(
+                        if (uiState.exposureMax > uiState.exposureMin) {
+                            uiState.exposureMax.toFloat()
+                        } else {
+                            uiState.exposureMin.toFloat() + 1f
+                        }
+                    ),
+                    colors = SliderDefaults.colors(
+                        thumbColor = GoldPrimary,
+                        activeTrackColor = GoldPrimary
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 8.dp)
                 )
-                Text("${uiState.exposureIndex}", color = Color.White, style = MaterialTheme.typography.labelSmall)
+                Text(
+                    "${uiState.exposureIndex}",
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelSmall
+                )
             }
 
-            // Zoom slider
             Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text("Zoom", color = Color.White, style = MaterialTheme.typography.labelSmall)
                 Slider(
                     value = uiState.zoomRatio,
                     onValueChange = { viewModel.setZoom(it) },
-                    valueRange = uiState.minZoomRatio..(if (uiState.maxZoomRatio > uiState.minZoomRatio) uiState.maxZoomRatio else uiState.minZoomRatio + 1f),
-                    colors = SliderDefaults.colors(thumbColor = GoldPrimary, activeTrackColor = GoldPrimary),
-                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
+                    valueRange = uiState.minZoomRatio..(
+                        if (uiState.maxZoomRatio > uiState.minZoomRatio) {
+                            uiState.maxZoomRatio
+                        } else {
+                            uiState.minZoomRatio + 1f
+                        }
+                    ),
+                    colors = SliderDefaults.colors(
+                        thumbColor = GoldPrimary,
+                        activeTrackColor = GoldPrimary
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 8.dp)
                 )
             }
 
             Spacer(modifier = Modifier.height(4.dp))
 
-            // Row 1: camera-related controls
             Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically,
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 ControlIcon(
                     icon = Icons.Filled.Cameraswitch,
@@ -208,6 +291,7 @@ fun CameraPreviewScreen(
                     enabled = uiState.streamState != StreamState.LIVE,
                     onClick = { viewModel.flip() }
                 )
+
                 ControlIcon(
                     icon = if (uiState.isTorchOn) Icons.Filled.FlashOn else Icons.Filled.FlashOff,
                     label = "Torch",
@@ -215,32 +299,42 @@ fun CameraPreviewScreen(
                     enabled = uiState.isTorchAvailable,
                     onClick = { viewModel.toggleTorch() }
                 )
+
                 Box {
                     ControlIcon(
                         icon = Icons.Filled.WbAuto,
                         label = uiState.whiteBalance.label,
                         onClick = { showWbMenu = true }
                     )
-                    DropdownMenu(expanded = showWbMenu, onDismissRequest = { showWbMenu = false }) {
+                    DropdownMenu(
+                        expanded = showWbMenu,
+                        onDismissRequest = { showWbMenu = false }
+                    ) {
                         WhiteBalancePreset.entries.forEach { preset ->
                             DropdownMenuItem(
                                 text = { Text(preset.label) },
-                                onClick = { viewModel.setWhiteBalance(preset); showWbMenu = false }
+                                onClick = {
+                                    viewModel.setWhiteBalance(preset)
+                                    showWbMenu = false
+                                }
                             )
                         }
                     }
                 }
+
                 ControlIcon(
                     icon = if (uiState.isMicMuted) Icons.Filled.MicOff else Icons.Filled.Mic,
                     label = if (uiState.isMicMuted) "Muted" else "Mic",
                     tint = if (uiState.isMicMuted) CrimsonBright else Color.White,
                     onClick = { viewModel.toggleMic(context) }
                 )
+
                 ControlIcon(
                     icon = Icons.Filled.Layers,
                     label = "Overlays",
                     onClick = { showOverlayPanel = true }
                 )
+
                 ControlIcon(
                     icon = Icons.Filled.Tune,
                     label = "Audio",
@@ -253,15 +347,22 @@ fun CameraPreviewScreen(
             Button(
                 onClick = {
                     if (uiState.streamState == StreamState.LIVE) {
-                        viewModel.stopLive(context)
+                        showStopLiveDialog = true
                     } else {
                         viewModel.goLive(rtmpConfig.fullUrl())
                     }
                 },
                 enabled = uiState.cameraReady && uiState.streamState != StreamState.CONNECTING,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).height(52.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp)
+                    .height(52.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = if (uiState.streamState == StreamState.LIVE) CrimsonBright else GoldPrimary
+                    containerColor = if (uiState.streamState == StreamState.LIVE) {
+                        CrimsonBright
+                    } else {
+                        GoldPrimary
+                    }
                 ),
                 shape = RoundedCornerShape(12.dp)
             ) {
@@ -275,6 +376,29 @@ fun CameraPreviewScreen(
                 )
             }
         }
+    }
+
+    if (showStopLiveDialog) {
+        AlertDialog(
+            onDismissRequest = { showStopLiveDialog = false },
+            title = { Text("Stop live stream?") },
+            text = { Text("Are you sure you want to stop the current YouTube live stream?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showStopLiveDialog = false
+                        viewModel.stopLive()
+                    }
+                ) {
+                    Text("STOP LIVE", color = CrimsonBright)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showStopLiveDialog = false }) {
+                    Text("CANCEL")
+                }
+            }
+        )
     }
 
     if (showOverlayPanel) {
@@ -301,12 +425,20 @@ private fun ControlIcon(
     label: String,
     tint: Color = Color.White,
     enabled: Boolean = true,
-    onClick: () -> Unit,
+    onClick: () -> Unit
 ) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         IconButton(onClick = onClick, enabled = enabled) {
-            Icon(icon, contentDescription = label, tint = if (enabled) tint else Color.Gray)
+            Icon(
+                icon,
+                contentDescription = label,
+                tint = if (enabled) tint else Color.Gray
+            )
         }
-        Text(label, color = if (enabled) Color.White else Color.Gray, style = MaterialTheme.typography.labelSmall)
+        Text(
+            label,
+            color = if (enabled) Color.White else Color.Gray,
+            style = MaterialTheme.typography.labelSmall
+        )
     }
 }
