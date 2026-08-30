@@ -80,10 +80,6 @@ object OverlayRenderer {
             }
         }
         
-        // FIX: The original code never pushed the rendered bitmap to the Compositor, 
-        // which is why overlays were invisible on YouTube. This guarantees they render.
-        com.amarjeetmaan.ajlivestudio.streaming.OverlayCompositor.Factory.instance?.setOverlayBitmap(bitmap)
-
         if (hasWeb && !isWebLoopRunning) {
             isWebLoopRunning = true
             startWebCaptureLoop()
