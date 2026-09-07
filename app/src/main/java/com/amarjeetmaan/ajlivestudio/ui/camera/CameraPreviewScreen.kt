@@ -1,8 +1,11 @@
 package com.amarjeetmaan.ajlivestudio.ui.camera
 
+import android.app.Activity
+import android.content.pm.ActivityInfo
 import android.graphics.SurfaceTexture
 import android.view.Surface
 import android.view.TextureView
+import android.view.WindowManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -18,6 +21,7 @@ import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.WbAuto
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -35,6 +39,7 @@ import com.amarjeetmaan.ajlivestudio.ui.live.RtmpConfig
 import com.amarjeetmaan.ajlivestudio.ui.overlay.OverlayLayer
 import com.amarjeetmaan.ajlivestudio.ui.overlay.OverlayPanel
 import com.amarjeetmaan.ajlivestudio.ui.overlay.OverlayViewModel
+import com.amarjeetmaan.ajlivestudio.ui.setup.StreamOrientation
 import com.amarjeetmaan.ajlivestudio.ui.setup.StudioSetupState
 import com.amarjeetmaan.ajlivestudio.ui.theme.CrimsonBright
 import com.amarjeetmaan.ajlivestudio.ui.theme.GoldPrimary
@@ -51,6 +56,8 @@ fun CameraPreviewScreen(
     overlayViewModel: OverlayViewModel = viewModel()
 ) {
     val context = LocalContext.current
+    val activity = context as? Activity
+
     val uiState = viewModel.uiState
     val overlayItems = overlayViewModel.items.toList()
 
@@ -62,17 +69,117 @@ fun CameraPreviewScreen(
     var previewWidthPx by remember { mutableStateOf(0) }
     var previewHeightPx by remember { mutableStateOf(0) }
 
+    /*
+     * ------------------------------------------------------------
+     * PREVIEW ORIENTATION LOCK + FULL SCREEN
+     * ------------------------------------------------------------
+     *
+     * The orientation selected in Setup becomes the permanent
+     * orientation for this Preview/Live screen.
+     *
+     * Auto-rotate setting on the phone is ignored while this
+     * screen is open.
+     */
+    DisposableEffect(activity, setupState.orientation) {
+
+        val previousRequestedOrientation =
+            activity?.requestedOrientation
+                ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+
+        val previousSystemUiVisibility =
+            activity?.window?.decorView?.systemUiVisibility
+                ?: 0
+
+        val previousFlags =
+            activity?.window?.attributes?.flags
+                ?: 0
+
+        /*
+         * Hide ActionBar if the Activity has one.
+         * This removes the "AJLiveStudio" title/header.
+         */
+        activity?.actionBar?.hide()
+
+        /*
+         * Keep screen awake during camera preview/live.
+         */
+        activity?.window?.addFlags(
+            WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+        )
+
+        /*
+         * True fullscreen:
+         * - hide status bar
+         * - hide navigation bar
+         * - immersive mode
+         */
+        @Suppress("DEPRECATION")
+        activity?.window?.decorView?.systemUiVisibility =
+            ViewSystemUi.FULLSCREEN_FLAGS
+
+        /*
+         * Lock the screen to the orientation selected in Setup.
+         */
+        activity?.requestedOrientation =
+            when (setupState.orientation) {
+                StreamOrientation.LANDSCAPE ->
+                    ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+
+                StreamOrientation.PORTRAIT ->
+                    ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            }
+
+        onDispose {
+
+            /*
+             * Restore the Activity orientation when leaving
+             * the camera screen.
+             */
+            activity?.requestedOrientation =
+                previousRequestedOrientation
+
+            /*
+             * Restore system UI.
+             */
+            @Suppress("DEPRECATION")
+            activity?.window?.decorView?.systemUiVisibility =
+                previousSystemUiVisibility
+
+            /*
+             * Restore keep-screen-on flag.
+             */
+            activity?.window?.clearFlags(
+                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+            )
+
+            /*
+             * If Activity has an ActionBar, restore it.
+             */
+            activity?.actionBar?.show()
+        }
+    }
+
+    /*
+     * Initialize camera using the selected setup orientation.
+     */
     LaunchedEffect(setupState) {
         viewModel.initialize(context, setupState)
     }
 
+    /*
+     * Render/update the real broadcast overlay bitmap.
+     */
     LaunchedEffect(
         overlayItems,
         previewWidthPx,
         previewHeightPx,
         uiState.cameraReady
     ) {
-        if (previewWidthPx > 0 && previewHeightPx > 0 && uiState.cameraReady) {
+        if (
+            previewWidthPx > 0 &&
+            previewHeightPx > 0 &&
+            uiState.cameraReady
+        ) {
             viewModel.updateOverlayBitmap(
                 context = context,
                 items = overlayItems,
@@ -82,97 +189,164 @@ fun CameraPreviewScreen(
         }
     }
 
+    /*
+     * ------------------------------------------------------------
+     * FULL SCREEN CAMERA STAGE
+     * ------------------------------------------------------------
+     */
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
     ) {
-        // Real StreamPack preview surface. The same SurfaceProcessor also receives
-        // the encoder output, so the camera path is not a fake Compose placeholder.
+
+        /*
+         * REAL STREAMPACK CAMERA PREVIEW
+         *
+         * TextureView occupies the complete screen.
+         */
         AndroidView(
             modifier = Modifier.fillMaxSize(),
+
             factory = { ctx ->
+
                 TextureView(ctx).apply {
-                    surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-                        override fun onSurfaceTextureAvailable(
-                            surfaceTexture: SurfaceTexture,
-                            width: Int,
-                            height: Int
-                        ) {
-                            previewWidthPx = width
-                            previewHeightPx = height
-                            viewModel.startPreview(Surface(surfaceTexture))
-                        }
 
-                        override fun onSurfaceTextureSizeChanged(
-                            surfaceTexture: SurfaceTexture,
-                            width: Int,
-                            height: Int
-                        ) {
-                            previewWidthPx = width
-                            previewHeightPx = height
-                        }
+                    isOpaque = true
 
-                        override fun onSurfaceTextureDestroyed(
-                            surfaceTexture: SurfaceTexture
-                        ): Boolean {
-                            viewModel.stopPreview()
-                            previewWidthPx = 0
-                            previewHeightPx = 0
-                            return true
-                        }
+                    surfaceTextureListener =
+                        object : TextureView.SurfaceTextureListener {
 
-                        override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) = Unit
-                    }
+                            override fun onSurfaceTextureAvailable(
+                                surfaceTexture: SurfaceTexture,
+                                width: Int,
+                                height: Int
+                            ) {
+                                previewWidthPx = width
+                                previewHeightPx = height
+
+                                viewModel.startPreview(
+                                    Surface(surfaceTexture)
+                                )
+                            }
+
+                            override fun onSurfaceTextureSizeChanged(
+                                surfaceTexture: SurfaceTexture,
+                                width: Int,
+                                height: Int
+                            ) {
+                                previewWidthPx = width
+                                previewHeightPx = height
+                            }
+
+                            override fun onSurfaceTextureDestroyed(
+                                surfaceTexture: SurfaceTexture
+                            ): Boolean {
+
+                                viewModel.stopPreview()
+
+                                previewWidthPx = 0
+                                previewHeightPx = 0
+
+                                return true
+                            }
+
+                            override fun onSurfaceTextureUpdated(
+                                surfaceTexture: SurfaceTexture
+                            ) = Unit
+                        }
                 }
             },
+
             update = { textureView ->
-                textureView.surfaceTexture?.let {
-                    previewWidthPx = textureView.width
-                    previewHeightPx = textureView.height
-                }
+
+                previewWidthPx = textureView.width
+                previewHeightPx = textureView.height
             }
         )
 
-        // Compose copy of the overlay for editing/interaction.
-        // The actual broadcast copy is generated by OverlayRenderer and composited by GLES.
+        /*
+         * Compose editing layer.
+         *
+         * This remains on top of the camera preview for
+         * editing/interaction.
+         */
         OverlayLayer(
             items = overlayItems,
             editable = true,
             webReloadTick = overlayViewModel.webReloadTick,
             onTransform = { id, x, y, scale ->
-                overlayViewModel.updateTransform(id, x, y, scale)
+                overlayViewModel.updateTransform(
+                    id,
+                    x,
+                    y,
+                    scale
+                )
             }
         )
 
-        // Top bar
+        /*
+         * --------------------------------------------------------
+         * TOP STATUS BAR
+         * --------------------------------------------------------
+         *
+         * This is NOT the Android "AJLiveStudio" title bar.
+         *
+         * It is the in-camera live status/control bar.
+         */
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .align(Alignment.TopCenter)
-                .background(NavyDeep.copy(alpha = 0.55f))
+                .background(
+                    NavyDeep.copy(alpha = 0.55f)
+                )
         ) {
+
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                    .padding(
+                        horizontal = 12.dp,
+                        vertical = 10.dp
+                    ),
+                horizontalArrangement =
+                    Arrangement.SpaceBetween,
+                verticalAlignment =
+                    Alignment.CenterVertically
             ) {
+
                 TextButton(
                     onClick = onBack,
-                    enabled = uiState.streamState != StreamState.LIVE
+                    enabled =
+                        uiState.streamState != StreamState.LIVE
                 ) {
-                    Text("← Setup", color = Color.White)
+                    Text(
+                        "← Setup",
+                        color = Color.White
+                    )
                 }
 
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    val (dotColor, label) = when (uiState.streamState) {
-                        StreamState.IDLE -> Color.Gray to "Not live"
-                        StreamState.CONNECTING -> GoldPrimary to "Connecting…"
-                        StreamState.LIVE -> LiveGreen to "LIVE"
-                        StreamState.ERROR -> CrimsonBright to "Error"
-                    }
+                Row(
+                    verticalAlignment =
+                        Alignment.CenterVertically
+                ) {
+
+                    val (dotColor, label) =
+                        when (uiState.streamState) {
+
+                            StreamState.IDLE ->
+                                Color.Gray to "Not live"
+
+                            StreamState.CONNECTING ->
+                                GoldPrimary to "Connecting…"
+
+                            StreamState.LIVE ->
+                                LiveGreen to "LIVE"
+
+                            StreamState.ERROR ->
+                                CrimsonBright to "Error"
+                        }
 
                     Box(
                         modifier = Modifier
@@ -180,245 +354,523 @@ fun CameraPreviewScreen(
                             .clip(CircleShape)
                             .background(dotColor)
                     )
-                    Spacer(modifier = Modifier.width(6.dp))
+
+                    Spacer(
+                        modifier = Modifier.width(6.dp)
+                    )
+
                     Text(
                         label,
                         color = Color.White,
-                        style = MaterialTheme.typography.labelSmall
+                        style =
+                            MaterialTheme.typography.labelSmall
                     )
-                    Spacer(modifier = Modifier.width(10.dp))
+
+                    Spacer(
+                        modifier = Modifier.width(10.dp)
+                    )
+
                     Text(
-                        "${setupState.resolution.label} · ${setupState.frameRate.value}fps",
-                        color = Color.White.copy(alpha = 0.7f),
-                        style = MaterialTheme.typography.labelSmall
+                        "${setupState.resolution.label} · " +
+                                "${setupState.frameRate.value}fps",
+                        color =
+                            Color.White.copy(alpha = 0.7f),
+                        style =
+                            MaterialTheme.typography.labelSmall
                     )
                 }
             }
         }
 
+        /*
+         * Error message.
+         */
         uiState.errorMessage?.let { message ->
+
             Text(
                 text = message,
                 color = Color.White,
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .padding(top = 60.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(CrimsonBright.copy(alpha = 0.85f))
-                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                    .clip(
+                        RoundedCornerShape(8.dp)
+                    )
+                    .background(
+                        CrimsonBright.copy(alpha = 0.85f)
+                    )
+                    .padding(
+                        horizontal = 12.dp,
+                        vertical = 6.dp
+                    )
             )
         }
 
-        // Bottom control bar
+        /*
+         * --------------------------------------------------------
+         * BOTTOM CAMERA CONTROLS
+         * --------------------------------------------------------
+         */
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .align(Alignment.BottomCenter)
-                .background(NavyDeep.copy(alpha = 0.8f))
-                .padding(bottom = 16.dp, top = 10.dp)
+                .background(
+                    NavyDeep.copy(alpha = 0.8f)
+                )
+                .padding(
+                    bottom = 16.dp,
+                    top = 10.dp
+                )
         ) {
+
+            /*
+             * Exposure.
+             */
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp),
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment =
+                    Alignment.CenterVertically
             ) {
-                Text("EV", color = Color.White, style = MaterialTheme.typography.labelSmall)
+
+                Text(
+                    "EV",
+                    color = Color.White,
+                    style =
+                        MaterialTheme.typography.labelSmall
+                )
+
                 Slider(
-                    value = uiState.exposureIndex.toFloat(),
-                    onValueChange = { viewModel.setExposure(it.roundToInt()) },
-                    valueRange = uiState.exposureMin.toFloat()..(
-                        if (uiState.exposureMax > uiState.exposureMin) {
-                            uiState.exposureMax.toFloat()
-                        } else {
-                            uiState.exposureMin.toFloat() + 1f
-                        }
-                    ),
+                    value =
+                        uiState.exposureIndex.toFloat(),
+
+                    onValueChange = {
+                        viewModel.setExposure(
+                            it.roundToInt()
+                        )
+                    },
+
+                    valueRange =
+                        uiState.exposureMin.toFloat()..(
+                            if (
+                                uiState.exposureMax >
+                                uiState.exposureMin
+                            ) {
+                                uiState.exposureMax.toFloat()
+                            } else {
+                                uiState.exposureMin.toFloat() + 1f
+                            }
+                        ),
+
                     colors = SliderDefaults.colors(
                         thumbColor = GoldPrimary,
                         activeTrackColor = GoldPrimary
                     ),
+
                     modifier = Modifier
                         .weight(1f)
                         .padding(horizontal = 8.dp)
                 )
+
                 Text(
                     "${uiState.exposureIndex}",
                     color = Color.White,
-                    style = MaterialTheme.typography.labelSmall
+                    style =
+                        MaterialTheme.typography.labelSmall
                 )
             }
 
+            /*
+             * Zoom.
+             */
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp),
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment =
+                    Alignment.CenterVertically
             ) {
-                Text("Zoom", color = Color.White, style = MaterialTheme.typography.labelSmall)
+
+                Text(
+                    "Zoom",
+                    color = Color.White,
+                    style =
+                        MaterialTheme.typography.labelSmall
+                )
+
                 Slider(
                     value = uiState.zoomRatio,
-                    onValueChange = { viewModel.setZoom(it) },
-                    valueRange = uiState.minZoomRatio..(
-                        if (uiState.maxZoomRatio > uiState.minZoomRatio) {
-                            uiState.maxZoomRatio
-                        } else {
-                            uiState.minZoomRatio + 1f
-                        }
-                    ),
+
+                    onValueChange = {
+                        viewModel.setZoom(it)
+                    },
+
+                    valueRange =
+                        uiState.minZoomRatio..(
+                            if (
+                                uiState.maxZoomRatio >
+                                uiState.minZoomRatio
+                            ) {
+                                uiState.maxZoomRatio
+                            } else {
+                                uiState.minZoomRatio + 1f
+                            }
+                        ),
+
                     colors = SliderDefaults.colors(
                         thumbColor = GoldPrimary,
                         activeTrackColor = GoldPrimary
                     ),
+
                     modifier = Modifier
                         .weight(1f)
                         .padding(horizontal = 8.dp)
                 )
             }
 
-            Spacer(modifier = Modifier.height(4.dp))
+            Spacer(
+                modifier = Modifier.height(4.dp)
+            )
 
+            /*
+             * Main controls.
+             */
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 24.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically
+
+                horizontalArrangement =
+                    Arrangement.SpaceEvenly,
+
+                verticalAlignment =
+                    Alignment.CenterVertically
             ) {
+
                 ControlIcon(
                     icon = Icons.Filled.Cameraswitch,
                     label = "Flip",
-                    enabled = uiState.streamState != StreamState.LIVE,
-                    onClick = { viewModel.flip() }
+                    enabled =
+                        uiState.streamState !=
+                                StreamState.LIVE,
+                    onClick = {
+                        viewModel.flip()
+                    }
                 )
 
                 ControlIcon(
-                    icon = if (uiState.isTorchOn) Icons.Filled.FlashOn else Icons.Filled.FlashOff,
+                    icon =
+                        if (uiState.isTorchOn) {
+                            Icons.Filled.FlashOn
+                        } else {
+                            Icons.Filled.FlashOff
+                        },
+
                     label = "Torch",
-                    tint = if (uiState.isTorchOn) GoldPrimary else Color.White,
-                    enabled = uiState.isTorchAvailable,
-                    onClick = { viewModel.toggleTorch() }
+
+                    tint =
+                        if (uiState.isTorchOn) {
+                            GoldPrimary
+                        } else {
+                            Color.White
+                        },
+
+                    enabled =
+                        uiState.isTorchAvailable,
+
+                    onClick = {
+                        viewModel.toggleTorch()
+                    }
                 )
 
+                /*
+                 * White balance.
+                 */
                 Box {
+
                     ControlIcon(
                         icon = Icons.Filled.WbAuto,
-                        label = uiState.whiteBalance.label,
-                        onClick = { showWbMenu = true }
+                        label =
+                            uiState.whiteBalance.label,
+                        onClick = {
+                            showWbMenu = true
+                        }
                     )
+
                     DropdownMenu(
                         expanded = showWbMenu,
-                        onDismissRequest = { showWbMenu = false }
-                    ) {
-                        WhiteBalancePreset.entries.forEach { preset ->
-                            DropdownMenuItem(
-                                text = { Text(preset.label) },
-                                onClick = {
-                                    viewModel.setWhiteBalance(preset)
-                                    showWbMenu = false
-                                }
-                            )
+                        onDismissRequest = {
+                            showWbMenu = false
                         }
+                    ) {
+
+                        WhiteBalancePreset.entries
+                            .forEach { preset ->
+
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            preset.label
+                                        )
+                                    },
+
+                                    onClick = {
+
+                                        viewModel
+                                            .setWhiteBalance(
+                                                preset
+                                            )
+
+                                        showWbMenu = false
+                                    }
+                                )
+                            }
                     }
                 }
 
+                /*
+                 * Microphone.
+                 */
                 ControlIcon(
-                    icon = if (uiState.isMicMuted) Icons.Filled.MicOff else Icons.Filled.Mic,
-                    label = if (uiState.isMicMuted) "Muted" else "Mic",
-                    tint = if (uiState.isMicMuted) CrimsonBright else Color.White,
-                    onClick = { viewModel.toggleMic(context) }
+                    icon =
+                        if (uiState.isMicMuted) {
+                            Icons.Filled.MicOff
+                        } else {
+                            Icons.Filled.Mic
+                        },
+
+                    label =
+                        if (uiState.isMicMuted) {
+                            "Muted"
+                        } else {
+                            "Mic"
+                        },
+
+                    tint =
+                        if (uiState.isMicMuted) {
+                            CrimsonBright
+                        } else {
+                            Color.White
+                        },
+
+                    onClick = {
+                        viewModel.toggleMic(context)
+                    }
                 )
 
+                /*
+                 * Overlays.
+                 */
                 ControlIcon(
                     icon = Icons.Filled.Layers,
                     label = "Overlays",
-                    onClick = { showOverlayPanel = true }
+                    onClick = {
+                        showOverlayPanel = true
+                    }
                 )
 
+                /*
+                 * Audio.
+                 */
                 ControlIcon(
                     icon = Icons.Filled.Tune,
                     label = "Audio",
-                    onClick = { showAudioMixer = true }
+                    onClick = {
+                        showAudioMixer = true
+                    }
                 )
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(
+                modifier = Modifier.height(10.dp)
+            )
 
+            /*
+             * GO LIVE / STOP LIVE.
+             */
             Button(
                 onClick = {
-                    if (uiState.streamState == StreamState.LIVE) {
+
+                    if (
+                        uiState.streamState ==
+                        StreamState.LIVE
+                    ) {
                         showStopLiveDialog = true
                     } else {
-                        viewModel.goLive(rtmpConfig.fullUrl())
+                        viewModel.goLive(
+                            rtmpConfig.fullUrl()
+                        )
                     }
                 },
-                enabled = uiState.cameraReady && uiState.streamState != StreamState.CONNECTING,
+
+                enabled =
+                    uiState.cameraReady &&
+                            uiState.streamState !=
+                            StreamState.CONNECTING,
+
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 24.dp)
                     .height(52.dp),
+
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = if (uiState.streamState == StreamState.LIVE) {
-                        CrimsonBright
-                    } else {
-                        GoldPrimary
-                    }
+                    containerColor =
+                        if (
+                            uiState.streamState ==
+                            StreamState.LIVE
+                        ) {
+                            CrimsonBright
+                        } else {
+                            GoldPrimary
+                        }
                 ),
-                shape = RoundedCornerShape(12.dp)
+
+                shape =
+                    RoundedCornerShape(12.dp)
             ) {
+
                 Text(
                     when (uiState.streamState) {
-                        StreamState.LIVE -> "STOP LIVE"
-                        StreamState.CONNECTING -> "CONNECTING…"
-                        else -> "GO LIVE"
+
+                        StreamState.LIVE ->
+                            "STOP LIVE"
+
+                        StreamState.CONNECTING ->
+                            "CONNECTING…"
+
+                        else ->
+                            "GO LIVE"
                     },
-                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+
+                    fontWeight =
+                        androidx.compose.ui.text.font
+                            .FontWeight.Bold
                 )
             }
         }
     }
 
+    /*
+     * ------------------------------------------------------------
+     * STOP LIVE CONFIRMATION
+     * ------------------------------------------------------------
+     */
     if (showStopLiveDialog) {
+
         AlertDialog(
-            onDismissRequest = { showStopLiveDialog = false },
-            title = { Text("Stop live stream?") },
-            text = { Text("Are you sure you want to stop the current YouTube live stream?") },
+
+            onDismissRequest = {
+                showStopLiveDialog = false
+            },
+
+            title = {
+                Text("Stop live stream?")
+            },
+
+            text = {
+                Text(
+                    "Are you sure you want to stop " +
+                            "the current YouTube live stream?"
+                )
+            },
+
             confirmButton = {
+
                 TextButton(
                     onClick = {
+
                         showStopLiveDialog = false
+
                         viewModel.stopLive()
                     }
                 ) {
-                    Text("STOP LIVE", color = CrimsonBright)
+
+                    Text(
+                        "STOP LIVE",
+                        color = CrimsonBright
+                    )
                 }
             },
+
             dismissButton = {
-                TextButton(onClick = { showStopLiveDialog = false }) {
+
+                TextButton(
+                    onClick = {
+                        showStopLiveDialog = false
+                    }
+                ) {
                     Text("CANCEL")
                 }
             }
         )
     }
 
+    /*
+     * Overlay panel.
+     */
     if (showOverlayPanel) {
+
         OverlayPanel(
             viewModel = overlayViewModel,
-            onDismiss = { showOverlayPanel = false }
+            onDismiss = {
+                showOverlayPanel = false
+            }
         )
     }
 
+    /*
+     * Audio mixer.
+     */
     if (showAudioMixer) {
+
         AudioMixerSheet(
             uiState = uiState,
-            onGainChange = { viewModel.setMicGain(it) },
-            onMusicVolumeChange = { viewModel.setMusicVolume(it) },
-            onConnectBluetooth = { viewModel.connectBluetoothMic() },
-            onDismiss = { showAudioMixer = false }
+
+            onGainChange = {
+                viewModel.setMicGain(it)
+            },
+
+            onMusicVolumeChange = {
+                viewModel.setMusicVolume(it)
+            },
+
+            onConnectBluetooth = {
+                viewModel.connectBluetoothMic()
+            },
+
+            onDismiss = {
+                showAudioMixer = false
+            }
         )
     }
 }
 
+/*
+ * ------------------------------------------------------------
+ * SYSTEM UI FLAGS
+ * ------------------------------------------------------------
+ *
+ * Kept separately so the main Composable stays readable.
+ */
+private object ViewSystemUi {
+
+    @Suppress("DEPRECATION")
+    const val FULLSCREEN_FLAGS =
+        android.view.View.SYSTEM_UI_FLAG_FULLSCREEN or
+                android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+                android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+}
+
+/*
+ * ------------------------------------------------------------
+ * CONTROL BUTTON
+ * ------------------------------------------------------------
+ */
 @Composable
 private fun ControlIcon(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
@@ -427,18 +879,40 @@ private fun ControlIcon(
     enabled: Boolean = true,
     onClick: () -> Unit
 ) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        IconButton(onClick = onClick, enabled = enabled) {
+
+    Column(
+        horizontalAlignment =
+            Alignment.CenterHorizontally
+    ) {
+
+        IconButton(
+            onClick = onClick,
+            enabled = enabled
+        ) {
+
             Icon(
-                icon,
+                imageVector = icon,
                 contentDescription = label,
-                tint = if (enabled) tint else Color.Gray
+                tint =
+                    if (enabled) {
+                        tint
+                    } else {
+                        Color.Gray
+                    }
             )
         }
+
         Text(
             label,
-            color = if (enabled) Color.White else Color.Gray,
-            style = MaterialTheme.typography.labelSmall
+            color =
+                if (enabled) {
+                    Color.White
+                } else {
+                    Color.Gray
+                },
+
+            style =
+                MaterialTheme.typography.labelSmall
         )
     }
 }
