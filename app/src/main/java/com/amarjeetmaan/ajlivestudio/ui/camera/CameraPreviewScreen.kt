@@ -5,6 +5,7 @@ import android.content.pm.ActivityInfo
 import android.graphics.SurfaceTexture
 import android.view.Surface
 import android.view.TextureView
+import android.view.View
 import android.view.WindowManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -20,13 +21,7 @@ import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.WbAuto
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -55,119 +50,124 @@ fun CameraPreviewScreen(
     viewModel: CameraViewModel = viewModel(),
     overlayViewModel: OverlayViewModel = viewModel()
 ) {
+
     val context = LocalContext.current
     val activity = context as? Activity
 
-    val uiState = viewModel.uiState
-    val overlayItems = overlayViewModel.items.toList()
+    val uiState =
+        viewModel.uiState
 
-    var showWbMenu by remember { mutableStateOf(false) }
-    var showOverlayPanel by remember { mutableStateOf(false) }
-    var showAudioMixer by remember { mutableStateOf(false) }
-    var showStopLiveDialog by remember { mutableStateOf(false) }
+    val overlayItems =
+        overlayViewModel.items.toList()
 
-    var previewWidthPx by remember { mutableStateOf(0) }
-    var previewHeightPx by remember { mutableStateOf(0) }
+    var showWbMenu by remember {
+        mutableStateOf(false)
+    }
+
+    var showOverlayPanel by remember {
+        mutableStateOf(false)
+    }
+
+    var showAudioMixer by remember {
+        mutableStateOf(false)
+    }
+
+    var showStopLiveDialog by remember {
+        mutableStateOf(false)
+    }
+
+    var previewWidthPx by remember {
+        mutableStateOf(0)
+    }
+
+    var previewHeightPx by remember {
+        mutableStateOf(0)
+    }
 
     /*
      * ------------------------------------------------------------
-     * PREVIEW ORIENTATION LOCK + FULL SCREEN
+     * HARD ORIENTATION LOCK
      * ------------------------------------------------------------
      *
-     * The orientation selected in Setup becomes the permanent
-     * orientation for this Preview/Live screen.
-     *
-     * Auto-rotate setting on the phone is ignored while this
-     * screen is open.
+     * Auto-rotate does not control this screen.
      */
-    DisposableEffect(activity, setupState.orientation) {
+    DisposableEffect(
+        activity,
+        setupState.orientation
+    ) {
 
-        val previousRequestedOrientation =
+        val previousOrientation =
             activity?.requestedOrientation
-                ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                ?: ActivityInfo
+                    .SCREEN_ORIENTATION_UNSPECIFIED
 
-        val previousSystemUiVisibility =
-            activity?.window?.decorView?.systemUiVisibility
+        val previousUiFlags =
+            @Suppress("DEPRECATION")
+            activity?.window
+                ?.decorView
+                ?.systemUiVisibility
                 ?: 0
 
-        val previousFlags =
-            activity?.window?.attributes?.flags
-                ?: 0
-
-        /*
-         * Hide ActionBar if the Activity has one.
-         * This removes the "AJLiveStudio" title/header.
-         */
         activity?.actionBar?.hide()
 
-        /*
-         * Keep screen awake during camera preview/live.
-         */
         activity?.window?.addFlags(
-            WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+            WindowManager.LayoutParams
+                .FLAG_KEEP_SCREEN_ON
         )
 
-        /*
-         * True fullscreen:
-         * - hide status bar
-         * - hide navigation bar
-         * - immersive mode
-         */
         @Suppress("DEPRECATION")
-        activity?.window?.decorView?.systemUiVisibility =
+        activity?.window?.decorView
+            ?.systemUiVisibility =
             ViewSystemUi.FULLSCREEN_FLAGS
 
-        /*
-         * Lock the screen to the orientation selected in Setup.
-         */
         activity?.requestedOrientation =
-            when (setupState.orientation) {
+            when (
+                setupState.orientation
+            ) {
+
                 StreamOrientation.LANDSCAPE ->
-                    ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                    ActivityInfo
+                        .SCREEN_ORIENTATION_LANDSCAPE
 
                 StreamOrientation.PORTRAIT ->
-                    ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                    ActivityInfo
+                        .SCREEN_ORIENTATION_PORTRAIT
             }
 
         onDispose {
 
-            /*
-             * Restore the Activity orientation when leaving
-             * the camera screen.
-             */
             activity?.requestedOrientation =
-                previousRequestedOrientation
+                previousOrientation
 
-            /*
-             * Restore system UI.
-             */
             @Suppress("DEPRECATION")
-            activity?.window?.decorView?.systemUiVisibility =
-                previousSystemUiVisibility
+            activity?.window?.decorView
+                ?.systemUiVisibility =
+                previousUiFlags
 
-            /*
-             * Restore keep-screen-on flag.
-             */
             activity?.window?.clearFlags(
-                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                WindowManager.LayoutParams
+                    .FLAG_KEEP_SCREEN_ON
             )
 
-            /*
-             * If Activity has an ActionBar, restore it.
-             */
             activity?.actionBar?.show()
         }
     }
 
     /*
-     * Initialize camera using the selected setup orientation.
+     * Initialize StreamPack using exactly the selected
+     * orientation and resolution.
      */
-    LaunchedEffect(setupState) {
-        viewModel.initialize(context, setupState)
+    LaunchedEffect(
+        setupState
+    ) {
+        viewModel.initialize(
+            context,
+            setupState
+        )
     }
 
     /*
-     * Render/update the real broadcast overlay bitmap.
+     * Update native broadcast overlay.
      */
     LaunchedEffect(
         overlayItems,
@@ -175,25 +175,24 @@ fun CameraPreviewScreen(
         previewHeightPx,
         uiState.cameraReady
     ) {
+
         if (
             previewWidthPx > 0 &&
             previewHeightPx > 0 &&
             uiState.cameraReady
         ) {
+
             viewModel.updateOverlayBitmap(
                 context = context,
                 items = overlayItems,
-                containerWidthPx = previewWidthPx,
-                containerHeightPx = previewHeightPx
+                containerWidthPx =
+                    previewWidthPx,
+                containerHeightPx =
+                    previewHeightPx
             )
         }
     }
 
-    /*
-     * ------------------------------------------------------------
-     * FULL SCREEN CAMERA STAGE
-     * ------------------------------------------------------------
-     */
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -201,12 +200,11 @@ fun CameraPreviewScreen(
     ) {
 
         /*
-         * REAL STREAMPACK CAMERA PREVIEW
-         *
-         * TextureView occupies the complete screen.
+         * FULL SCREEN CAMERA PREVIEW
          */
         AndroidView(
-            modifier = Modifier.fillMaxSize(),
+            modifier =
+                Modifier.fillMaxSize(),
 
             factory = { ctx ->
 
@@ -215,33 +213,48 @@ fun CameraPreviewScreen(
                     isOpaque = true
 
                     surfaceTextureListener =
-                        object : TextureView.SurfaceTextureListener {
+                        object :
+                            TextureView
+                                .SurfaceTextureListener {
 
-                            override fun onSurfaceTextureAvailable(
-                                surfaceTexture: SurfaceTexture,
-                                width: Int,
-                                height: Int
-                            ) {
-                                previewWidthPx = width
-                                previewHeightPx = height
+                            override fun
+                                onSurfaceTextureAvailable(
+                                    surfaceTexture: SurfaceTexture,
+                                    width: Int,
+                                    height: Int
+                                ) {
+
+                                previewWidthPx =
+                                    width
+
+                                previewHeightPx =
+                                    height
 
                                 viewModel.startPreview(
-                                    Surface(surfaceTexture)
+                                    Surface(
+                                        surfaceTexture
+                                    )
                                 )
                             }
 
-                            override fun onSurfaceTextureSizeChanged(
-                                surfaceTexture: SurfaceTexture,
-                                width: Int,
-                                height: Int
-                            ) {
-                                previewWidthPx = width
-                                previewHeightPx = height
+                            override fun
+                                onSurfaceTextureSizeChanged(
+                                    surfaceTexture: SurfaceTexture,
+                                    width: Int,
+                                    height: Int
+                                ) {
+
+                                previewWidthPx =
+                                    width
+
+                                previewHeightPx =
+                                    height
                             }
 
-                            override fun onSurfaceTextureDestroyed(
-                                surfaceTexture: SurfaceTexture
-                            ): Boolean {
+                            override fun
+                                onSurfaceTextureDestroyed(
+                                    surfaceTexture: SurfaceTexture
+                                ): Boolean {
 
                                 viewModel.stopPreview()
 
@@ -251,31 +264,40 @@ fun CameraPreviewScreen(
                                 return true
                             }
 
-                            override fun onSurfaceTextureUpdated(
-                                surfaceTexture: SurfaceTexture
-                            ) = Unit
+                            override fun
+                                onSurfaceTextureUpdated(
+                                    surfaceTexture: SurfaceTexture
+                                ) {
+                                // Nothing required.
+                            }
                         }
                 }
             },
 
             update = { textureView ->
 
-                previewWidthPx = textureView.width
-                previewHeightPx = textureView.height
+                previewWidthPx =
+                    textureView.width
+
+                previewHeightPx =
+                    textureView.height
             }
         )
 
         /*
-         * Compose editing layer.
-         *
-         * This remains on top of the camera preview for
-         * editing/interaction.
+         * Compose overlay editing layer.
          */
         OverlayLayer(
             items = overlayItems,
             editable = true,
-            webReloadTick = overlayViewModel.webReloadTick,
-            onTransform = { id, x, y, scale ->
+            webReloadTick =
+                overlayViewModel.webReloadTick,
+            onTransform = {
+                    id,
+                    x,
+                    y,
+                    scale ->
+
                 overlayViewModel.updateTransform(
                     id,
                     x,
@@ -286,20 +308,16 @@ fun CameraPreviewScreen(
         )
 
         /*
-         * --------------------------------------------------------
-         * TOP STATUS BAR
-         * --------------------------------------------------------
-         *
-         * This is NOT the Android "AJLiveStudio" title bar.
-         *
-         * It is the in-camera live status/control bar.
+         * LIVE STATUS BAR
          */
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .align(Alignment.TopCenter)
                 .background(
-                    NavyDeep.copy(alpha = 0.55f)
+                    NavyDeep.copy(
+                        alpha = 0.55f
+                    )
                 )
         ) {
 
@@ -319,8 +337,10 @@ fun CameraPreviewScreen(
                 TextButton(
                     onClick = onBack,
                     enabled =
-                        uiState.streamState != StreamState.LIVE
+                        uiState.streamState !=
+                                StreamState.LIVE
                 ) {
+
                     Text(
                         "← Setup",
                         color = Color.White
@@ -332,58 +352,77 @@ fun CameraPreviewScreen(
                         Alignment.CenterVertically
                 ) {
 
-                    val (dotColor, label) =
-                        when (uiState.streamState) {
+                    val (
+                        dotColor,
+                        label
+                    ) =
+                        when (
+                            uiState.streamState
+                        ) {
 
                             StreamState.IDLE ->
-                                Color.Gray to "Not live"
+                                Color.Gray to
+                                        "Not live"
 
                             StreamState.CONNECTING ->
-                                GoldPrimary to "Connecting…"
+                                GoldPrimary to
+                                        "Connecting…"
 
                             StreamState.LIVE ->
-                                LiveGreen to "LIVE"
+                                LiveGreen to
+                                        "LIVE"
 
                             StreamState.ERROR ->
-                                CrimsonBright to "Error"
+                                CrimsonBright to
+                                        "Error"
                         }
 
                     Box(
                         modifier = Modifier
                             .size(8.dp)
                             .clip(CircleShape)
-                            .background(dotColor)
+                            .background(
+                                dotColor
+                            )
                     )
 
                     Spacer(
-                        modifier = Modifier.width(6.dp)
+                        modifier =
+                            Modifier.width(6.dp)
                     )
 
                     Text(
                         label,
                         color = Color.White,
                         style =
-                            MaterialTheme.typography.labelSmall
+                            MaterialTheme
+                                .typography
+                                .labelSmall
                     )
 
                     Spacer(
-                        modifier = Modifier.width(10.dp)
+                        modifier =
+                            Modifier.width(10.dp)
                     )
 
                     Text(
                         "${setupState.resolution.label} · " +
                                 "${setupState.frameRate.value}fps",
                         color =
-                            Color.White.copy(alpha = 0.7f),
+                            Color.White.copy(
+                                alpha = 0.7f
+                            ),
                         style =
-                            MaterialTheme.typography.labelSmall
+                            MaterialTheme
+                                .typography
+                                .labelSmall
                     )
                 }
             }
         }
 
         /*
-         * Error message.
+         * ERROR
          */
         uiState.errorMessage?.let { message ->
 
@@ -397,7 +436,9 @@ fun CameraPreviewScreen(
                         RoundedCornerShape(8.dp)
                     )
                     .background(
-                        CrimsonBright.copy(alpha = 0.85f)
+                        CrimsonBright.copy(
+                            alpha = 0.85f
+                        )
                     )
                     .padding(
                         horizontal = 12.dp,
@@ -407,16 +448,16 @@ fun CameraPreviewScreen(
         }
 
         /*
-         * --------------------------------------------------------
-         * BOTTOM CAMERA CONTROLS
-         * --------------------------------------------------------
+         * BOTTOM CONTROLS
          */
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .align(Alignment.BottomCenter)
                 .background(
-                    NavyDeep.copy(alpha = 0.8f)
+                    NavyDeep.copy(
+                        alpha = 0.8f
+                    )
                 )
                 .padding(
                     bottom = 16.dp,
@@ -424,13 +465,12 @@ fun CameraPreviewScreen(
                 )
         ) {
 
-            /*
-             * Exposure.
-             */
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp),
+                    .padding(
+                        horizontal = 20.dp
+                    ),
                 verticalAlignment =
                     Alignment.CenterVertically
             ) {
@@ -439,12 +479,15 @@ fun CameraPreviewScreen(
                     "EV",
                     color = Color.White,
                     style =
-                        MaterialTheme.typography.labelSmall
+                        MaterialTheme
+                            .typography
+                            .labelSmall
                 )
 
                 Slider(
                     value =
-                        uiState.exposureIndex.toFloat(),
+                        uiState.exposureIndex
+                            .toFloat(),
 
                     onValueChange = {
                         viewModel.setExposure(
@@ -453,42 +496,52 @@ fun CameraPreviewScreen(
                     },
 
                     valueRange =
-                        uiState.exposureMin.toFloat()..(
+                        uiState.exposureMin
+                            .toFloat()..(
                             if (
                                 uiState.exposureMax >
                                 uiState.exposureMin
                             ) {
-                                uiState.exposureMax.toFloat()
+                                uiState.exposureMax
+                                    .toFloat()
                             } else {
-                                uiState.exposureMin.toFloat() + 1f
+                                uiState.exposureMin
+                                    .toFloat() + 1f
                             }
                         ),
 
-                    colors = SliderDefaults.colors(
-                        thumbColor = GoldPrimary,
-                        activeTrackColor = GoldPrimary
-                    ),
+                    colors =
+                        SliderDefaults.colors(
+                            thumbColor =
+                                GoldPrimary,
+                            activeTrackColor =
+                                GoldPrimary
+                        ),
 
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(horizontal = 8.dp)
+                    modifier =
+                        Modifier
+                            .weight(1f)
+                            .padding(
+                                horizontal = 8.dp
+                            )
                 )
 
                 Text(
                     "${uiState.exposureIndex}",
                     color = Color.White,
                     style =
-                        MaterialTheme.typography.labelSmall
+                        MaterialTheme
+                            .typography
+                            .labelSmall
                 )
             }
 
-            /*
-             * Zoom.
-             */
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp),
+                    .padding(
+                        horizontal = 20.dp
+                    ),
                 verticalAlignment =
                     Alignment.CenterVertically
             ) {
@@ -497,11 +550,14 @@ fun CameraPreviewScreen(
                     "Zoom",
                     color = Color.White,
                     style =
-                        MaterialTheme.typography.labelSmall
+                        MaterialTheme
+                            .typography
+                            .labelSmall
                 )
 
                 Slider(
-                    value = uiState.zoomRatio,
+                    value =
+                        uiState.zoomRatio,
 
                     onValueChange = {
                         viewModel.setZoom(it)
@@ -519,38 +575,43 @@ fun CameraPreviewScreen(
                             }
                         ),
 
-                    colors = SliderDefaults.colors(
-                        thumbColor = GoldPrimary,
-                        activeTrackColor = GoldPrimary
-                    ),
+                    colors =
+                        SliderDefaults.colors(
+                            thumbColor =
+                                GoldPrimary,
+                            activeTrackColor =
+                                GoldPrimary
+                        ),
 
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(horizontal = 8.dp)
+                    modifier =
+                        Modifier
+                            .weight(1f)
+                            .padding(
+                                horizontal = 8.dp
+                            )
                 )
             }
 
             Spacer(
-                modifier = Modifier.height(4.dp)
+                modifier =
+                    Modifier.height(4.dp)
             )
 
-            /*
-             * Main controls.
-             */
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 24.dp),
-
+                    .padding(
+                        horizontal = 24.dp
+                    ),
                 horizontalArrangement =
                     Arrangement.SpaceEvenly,
-
                 verticalAlignment =
                     Alignment.CenterVertically
             ) {
 
                 ControlIcon(
-                    icon = Icons.Filled.Cameraswitch,
+                    icon =
+                        Icons.Filled.Cameraswitch,
                     label = "Flip",
                     enabled =
                         uiState.streamState !=
@@ -562,51 +623,53 @@ fun CameraPreviewScreen(
 
                 ControlIcon(
                     icon =
-                        if (uiState.isTorchOn) {
+                        if (
+                            uiState.isTorchOn
+                        ) {
                             Icons.Filled.FlashOn
                         } else {
                             Icons.Filled.FlashOff
                         },
-
                     label = "Torch",
-
                     tint =
-                        if (uiState.isTorchOn) {
+                        if (
+                            uiState.isTorchOn
+                        ) {
                             GoldPrimary
                         } else {
                             Color.White
                         },
-
                     enabled =
                         uiState.isTorchAvailable,
-
                     onClick = {
                         viewModel.toggleTorch()
                     }
                 )
 
-                /*
-                 * White balance.
-                 */
                 Box {
 
                     ControlIcon(
-                        icon = Icons.Filled.WbAuto,
+                        icon =
+                            Icons.Filled.WbAuto,
                         label =
-                            uiState.whiteBalance.label,
+                            uiState
+                                .whiteBalance
+                                .label,
                         onClick = {
                             showWbMenu = true
                         }
                     )
 
                     DropdownMenu(
-                        expanded = showWbMenu,
+                        expanded =
+                            showWbMenu,
                         onDismissRequest = {
                             showWbMenu = false
                         }
                     ) {
 
-                        WhiteBalancePreset.entries
+                        WhiteBalancePreset
+                            .entries
                             .forEach { preset ->
 
                                 DropdownMenuItem(
@@ -615,7 +678,6 @@ fun CameraPreviewScreen(
                                             preset.label
                                         )
                                     },
-
                                     onClick = {
 
                                         viewModel
@@ -623,59 +685,58 @@ fun CameraPreviewScreen(
                                                 preset
                                             )
 
-                                        showWbMenu = false
+                                        showWbMenu =
+                                            false
                                     }
                                 )
                             }
                     }
                 }
 
-                /*
-                 * Microphone.
-                 */
                 ControlIcon(
                     icon =
-                        if (uiState.isMicMuted) {
+                        if (
+                            uiState.isMicMuted
+                        ) {
                             Icons.Filled.MicOff
                         } else {
                             Icons.Filled.Mic
                         },
-
                     label =
-                        if (uiState.isMicMuted) {
+                        if (
+                            uiState.isMicMuted
+                        ) {
                             "Muted"
                         } else {
                             "Mic"
                         },
-
                     tint =
-                        if (uiState.isMicMuted) {
+                        if (
+                            uiState.isMicMuted
+                        ) {
                             CrimsonBright
                         } else {
                             Color.White
                         },
-
                     onClick = {
-                        viewModel.toggleMic(context)
+                        viewModel.toggleMic(
+                            context
+                        )
                     }
                 )
 
-                /*
-                 * Overlays.
-                 */
                 ControlIcon(
-                    icon = Icons.Filled.Layers,
+                    icon =
+                        Icons.Filled.Layers,
                     label = "Overlays",
                     onClick = {
                         showOverlayPanel = true
                     }
                 )
 
-                /*
-                 * Audio.
-                 */
                 ControlIcon(
-                    icon = Icons.Filled.Tune,
+                    icon =
+                        Icons.Filled.Tune,
                     label = "Audio",
                     onClick = {
                         showAudioMixer = true
@@ -684,12 +745,10 @@ fun CameraPreviewScreen(
             }
 
             Spacer(
-                modifier = Modifier.height(10.dp)
+                modifier =
+                    Modifier.height(10.dp)
             )
 
-            /*
-             * GO LIVE / STOP LIVE.
-             */
             Button(
                 onClick = {
 
@@ -710,29 +769,35 @@ fun CameraPreviewScreen(
                             uiState.streamState !=
                             StreamState.CONNECTING,
 
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 24.dp)
-                    .height(52.dp),
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(
+                            horizontal = 24.dp
+                        )
+                        .height(52.dp),
 
-                colors = ButtonDefaults.buttonColors(
-                    containerColor =
-                        if (
-                            uiState.streamState ==
-                            StreamState.LIVE
-                        ) {
-                            CrimsonBright
-                        } else {
-                            GoldPrimary
-                        }
-                ),
+                colors =
+                    ButtonDefaults.buttonColors(
+                        containerColor =
+                            if (
+                                uiState.streamState ==
+                                StreamState.LIVE
+                            ) {
+                                CrimsonBright
+                            } else {
+                                GoldPrimary
+                            }
+                    ),
 
                 shape =
                     RoundedCornerShape(12.dp)
             ) {
 
                 Text(
-                    when (uiState.streamState) {
+                    when (
+                        uiState.streamState
+                    ) {
 
                         StreamState.LIVE ->
                             "STOP LIVE"
@@ -753,9 +818,7 @@ fun CameraPreviewScreen(
     }
 
     /*
-     * ------------------------------------------------------------
-     * STOP LIVE CONFIRMATION
-     * ------------------------------------------------------------
+     * STOP LIVE DIALOG
      */
     if (showStopLiveDialog) {
 
@@ -766,7 +829,9 @@ fun CameraPreviewScreen(
             },
 
             title = {
-                Text("Stop live stream?")
+                Text(
+                    "Stop live stream?"
+                )
             },
 
             text = {
@@ -807,9 +872,6 @@ fun CameraPreviewScreen(
         )
     }
 
-    /*
-     * Overlay panel.
-     */
     if (showOverlayPanel) {
 
         OverlayPanel(
@@ -820,9 +882,6 @@ fun CameraPreviewScreen(
         )
     }
 
-    /*
-     * Audio mixer.
-     */
     if (showAudioMixer) {
 
         AudioMixerSheet(
@@ -847,33 +906,22 @@ fun CameraPreviewScreen(
     }
 }
 
-/*
- * ------------------------------------------------------------
- * SYSTEM UI FLAGS
- * ------------------------------------------------------------
- *
- * Kept separately so the main Composable stays readable.
- */
 private object ViewSystemUi {
 
     @Suppress("DEPRECATION")
     const val FULLSCREEN_FLAGS =
-        android.view.View.SYSTEM_UI_FLAG_FULLSCREEN or
-                android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
-                android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
-                android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
-                android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
-                android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+        View.SYSTEM_UI_FLAG_FULLSCREEN or
+                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE
 }
 
-/*
- * ------------------------------------------------------------
- * CONTROL BUTTON
- * ------------------------------------------------------------
- */
 @Composable
 private fun ControlIcon(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    icon:
+        androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
     tint: Color = Color.White,
     enabled: Boolean = true,
@@ -910,9 +958,10 @@ private fun ControlIcon(
                 } else {
                     Color.Gray
                 },
-
             style =
-                MaterialTheme.typography.labelSmall
+                MaterialTheme
+                    .typography
+                    .labelSmall
         )
     }
 }
