@@ -4,6 +4,7 @@ import android.content.Context
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.media.AudioFormat
+import android.util.Size
 import android.view.Surface
 import io.github.thibaultbee.streampack.core.elements.sources.video.camera.ICameraSource
 import io.github.thibaultbee.streampack.core.interfaces.setCameraId
@@ -22,15 +23,9 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 
-/**
- * DIRECT CAMERA STREAM TEST
- *
- * Camera -> StreamPack -> Encoder -> RTMP/RTMPS -> YouTube
- *
- * OverlayCompositor is intentionally NOT used here.
- * This file is for isolating the YouTube/encoder pipeline.
- */
-class StreamEngine(private val context: Context) {
+class StreamEngine(
+    private val context: Context
+) {
 
     var streamer: SingleStreamer? = null
         private set
@@ -38,55 +33,103 @@ class StreamEngine(private val context: Context) {
     private var currentCameraId: String = ""
     private var isFront: Boolean = false
 
-    /**
-     * Initialize the normal StreamPack camera pipeline.
-     *
-     * IMPORTANT:
-     * No SurfaceProcessorFactory is attached here.
-     */
+    private var configuredWidth: Int = 0
+    private var configuredHeight: Int = 0
+    private var configuredFps: Int = 0
+    private var configuredBitrate: Int = 0
+
     suspend fun initializeCamera(
         videoConfig: EngineVideoConfig,
         targetRotation: Int? = null
     ) {
+
         closeCurrentStreamer()
 
-        val cameraId = defaultBackCameraId()
-            ?: throw IllegalStateException("No back camera found")
+        val safeWidth =
+            videoConfig.width
+                .coerceAtLeast(2)
+
+        val safeHeight =
+            videoConfig.height
+                .coerceAtLeast(2)
+
+        val safeMaxWidth =
+            videoConfig.maxWidth
+                .coerceAtLeast(2)
+
+        val safeMaxHeight =
+            videoConfig.maxHeight
+                .coerceAtLeast(2)
+
+        /*
+         * Never allow the actual configured resolution
+         * to exceed the selected maximum.
+         */
+        val finalWidth =
+            safeWidth.coerceAtMost(
+                safeMaxWidth
+            )
+
+        val finalHeight =
+            safeHeight.coerceAtMost(
+                safeMaxHeight
+            )
+
+        configuredWidth = finalWidth
+        configuredHeight = finalHeight
+
+        configuredFps =
+            videoConfig.fps.coerceAtLeast(1)
+
+        configuredBitrate =
+            videoConfig.bitrateBps
+                .coerceAtLeast(500_000)
+
+        val cameraId =
+            defaultBackCameraId()
+                ?: throw IllegalStateException(
+                    "No back camera found"
+                )
 
         currentCameraId = cameraId
         isFront = false
 
-        /*
-         * DIRECT CAMERA PIPELINE
-         *
-         * Do NOT pass surfaceProcessorFactory.
-         *
-         * This is the same basic architecture that worked
-         * before the custom overlay compositor was introduced.
-         */
-        val newStreamer = cameraSingleStreamer(
-            context = context,
-            cameraId = cameraId
-        )
+        val newStreamer =
+            cameraSingleStreamer(
+                context = context,
+                cameraId = cameraId
+            )
 
+        /*
+         * Camera target rotation is controlled from
+         * the selected Setup orientation.
+         */
         targetRotation?.let {
             newStreamer.setTargetRotation(it)
         }
 
-        val audioConfig = AudioConfig(
-            startBitrate = 128_000,
-            sampleRate = 44_100,
-            channelConfig = AudioFormat.CHANNEL_IN_STEREO
-        )
+        val audioConfig =
+            AudioConfig(
+                startBitrate = 128_000,
+                sampleRate = 44_100,
+                channelConfig =
+                    AudioFormat.CHANNEL_IN_STEREO
+            )
 
-        val videoStreamConfig = VideoConfig(
-            startBitrate = videoConfig.bitrateBps,
-            resolution = android.util.Size(
-                videoConfig.width,
-                videoConfig.height
-            ),
-            fps = videoConfig.fps
-        )
+        val videoStreamConfig =
+            VideoConfig(
+                startBitrate =
+                    configuredBitrate,
+
+                resolution =
+                    Size(
+                        configuredWidth,
+                        configuredHeight
+                    ),
+
+                fps =
+                    configuredFps
+            )
 
         newStreamer.setConfig(
             audioConfig,
@@ -95,81 +138,81 @@ class StreamEngine(private val context: Context) {
 
         streamer = newStreamer
 
-        /*
-         * Wait until the actual camera source is available.
-         */
         awaitCameraSource()
     }
 
-    /**
-     * Overlay is intentionally ignored in this diagnostic build.
-     *
-     * Keeping this function means existing ViewModel/UI code
-     * can continue calling updateOverlay() without compilation errors.
-     */
-    fun updateOverlay(bitmap: android.graphics.Bitmap?) {
-        // Intentionally disabled for direct-camera diagnostic test.
+    fun updateOverlay(
+        bitmap: android.graphics.Bitmap?
+    ) {
+        /*
+         * Direct camera diagnostic pipeline.
+         *
+         * No MediaProjection.
+         * No screen recording.
+         * No compositor.
+         */
     }
 
-    /**
-     * Start normal camera preview.
-     */
-    suspend fun startCameraPreview(surface: Surface) {
-        val s = streamer
-            ?: throw IllegalStateException("Streamer is not initialized")
+    suspend fun startCameraPreview(
+        surface: Surface
+    ) {
+
+        val s =
+            streamer
+                ?: throw IllegalStateException(
+                    "Streamer is not initialized"
+                )
 
         s.startPreview(surface)
 
         awaitCameraSource()
     }
 
-    /**
-     * Stop camera preview.
-     */
     suspend fun stopCameraPreview() {
+
         runCatching {
             streamer?.stopPreview()
         }
     }
 
-    /**
-     * Start RTMP/RTMPS stream.
-     *
-     * This sends the direct camera output to StreamPack encoder
-     * without passing through OverlayCompositor.
-     */
-    suspend fun goLive(rtmpUrl: String) {
-        val s = streamer
-            ?: throw IllegalStateException("Streamer is not initialized")
+    suspend fun goLive(
+        rtmpUrl: String
+    ) {
+
+        val s =
+            streamer
+                ?: throw IllegalStateException(
+                    "Streamer is not initialized"
+                )
 
         if (rtmpUrl.isBlank()) {
-            throw IllegalArgumentException("RTMP URL is empty")
+            throw IllegalArgumentException(
+                "RTMP URL is empty"
+            )
         }
 
         s.startStream(rtmpUrl)
     }
 
-    /**
-     * Stop live stream.
-     */
     suspend fun stopLive() {
+
         runCatching {
             streamer?.stopStream()
         }
     }
 
-    /**
-     * Switch between rear and front camera.
-     */
     suspend fun flipCamera(): Boolean {
 
-        val s = streamer ?: return isFront
+        val s =
+            streamer
+                ?: return isFront
 
-        val nextId = if (isFront) {
-            defaultBackCameraId()
-        } else {
-            defaultFrontCameraId()
-        }
+        val nextId =
+            if (isFront) {
+                defaultBackCameraId()
+            } else {
+                defaultFrontCameraId()
+            }
 
         if (nextId == null) {
             return isFront
@@ -187,21 +230,24 @@ class StreamEngine(private val context: Context) {
             isFront
 
         } catch (_: Exception) {
+
             isFront
         }
     }
 
-    /**
-     * Mute/unmute audio when supported by the StreamPack version/device.
-     */
-    fun muteAudio(muted: Boolean) {
+    fun muteAudio(
+        muted: Boolean
+    ) {
 
         try {
 
-            val audioSettings = streamer
-                ?.javaClass
-                ?.getMethod("getAudioSettings")
-                ?.invoke(streamer)
+            val audioSettings =
+                streamer
+                    ?.javaClass
+                    ?.getMethod(
+                        "getAudioSettings"
+                    )
+                    ?.invoke(streamer)
 
             audioSettings
                 ?.javaClass
@@ -215,24 +261,21 @@ class StreamEngine(private val context: Context) {
                 )
 
         } catch (_: Exception) {
-            /*
-             * Audio mute is optional across StreamPack/device
-             * combinations. Do not break video streaming if this
-             * feature is unavailable.
-             */
+            // Optional feature.
         }
     }
 
-    /**
-     * Get the actual StreamPack camera source.
-     */
     suspend fun awaitCameraSource(
         timeoutMs: Long = 5_000
     ): ICameraSource? {
 
-        val s = streamer ?: return null
+        val s =
+            streamer
+                ?: return null
 
-        return withTimeoutOrNull(timeoutMs) {
+        return withTimeoutOrNull(
+            timeoutMs
+        ) {
 
             s.videoInput.sourceFlow
                 .filterNotNull()
@@ -241,46 +284,49 @@ class StreamEngine(private val context: Context) {
         }
     }
 
-    /**
-     * Check whether torch/flash is available.
-     */
     suspend fun isTorchAvailableAsync(): Boolean {
 
-        val source = awaitCameraSource()
-            ?: return false
+        val source =
+            awaitCameraSource()
+                ?: return false
 
-        return source.settings.flash.isAvailable
+        return source
+            .settings
+            .flash
+            .isAvailable
     }
 
-    /**
-     * Enable/disable flashlight.
-     */
-    suspend fun setTorch(enabled: Boolean) {
+    suspend fun setTorch(
+        enabled: Boolean
+    ) {
 
-        val source = awaitCameraSource()
-            ?: throw IllegalStateException(
-                "Camera source is not ready"
-            )
+        val source =
+            awaitCameraSource()
+                ?: throw IllegalStateException(
+                    "Camera source is not ready"
+                )
 
-        if (!source.settings.flash.isAvailable) {
+        if (
+            !source
+                .settings
+                .flash
+                .isAvailable
+        ) {
             throw IllegalStateException(
                 "Flashlight is not available on this camera"
             )
         }
 
-        source.settings.flash.setIsEnable(enabled)
+        source
+            .settings
+            .flash
+            .setIsEnable(enabled)
     }
 
-    /**
-     * Current camera state.
-     */
     fun isFrontCamera(): Boolean {
         return isFront
     }
 
-    /**
-     * Completely release current StreamPack instance.
-     */
     private suspend fun closeCurrentStreamer() {
 
         runCatching {
@@ -298,9 +344,6 @@ class StreamEngine(private val context: Context) {
         streamer = null
     }
 
-    /**
-     * Release StreamPack.
-     */
     suspend fun release() {
 
         runCatching {
@@ -318,61 +361,70 @@ class StreamEngine(private val context: Context) {
         streamer = null
     }
 
-    /**
-     * Synchronous cleanup helper.
-     */
     fun close() {
 
-        runBlocking(Dispatchers.Default) {
+        runBlocking(
+            Dispatchers.Default
+        ) {
             release()
         }
     }
 
-    /**
-     * Find rear camera.
-     */
     private fun defaultBackCameraId(): String? {
+
         return findCameraId(
-            CameraCharacteristics.LENS_FACING_BACK
+            CameraCharacteristics
+                .LENS_FACING_BACK
         )
     }
 
-    /**
-     * Find front camera.
-     */
     private fun defaultFrontCameraId(): String? {
+
         return findCameraId(
-            CameraCharacteristics.LENS_FACING_FRONT
+            CameraCharacteristics
+                .LENS_FACING_FRONT
         )
     }
 
-    /**
-     * Find camera ID by lens facing.
-     */
-    private fun findCameraId(facing: Int): String? {
+    private fun findCameraId(
+        facing: Int
+    ): String? {
 
         val manager =
             context.getSystemService(
                 Context.CAMERA_SERVICE
             ) as CameraManager
 
-        return manager.cameraIdList.firstOrNull { id ->
+        return manager.cameraIdList
+            .firstOrNull { id ->
 
-            manager
-                .getCameraCharacteristics(id)
-                .get(
-                    CameraCharacteristics.LENS_FACING
-                ) == facing
-        }
+                manager
+                    .getCameraCharacteristics(id)
+                    .get(
+                        CameraCharacteristics
+                            .LENS_FACING
+                    ) == facing
+            }
     }
 }
 
-/**
- * Video configuration used by StreamEngine.
- */
 data class EngineVideoConfig(
     val width: Int,
     val height: Int,
     val fps: Int,
-    val bitrateBps: Int
+    val bitrateBps: Int,
+
+    /*
+     * Hard maximum resolution.
+     *
+     * For 720p:
+     * maxWidth = 1280
+     * maxHeight = 720
+     *
+     * For 1080p:
+     * maxWidth = 1920
+     * maxHeight = 1080
+     */
+    val maxWidth: Int = width,
+    val maxHeight: Int = height
 )
