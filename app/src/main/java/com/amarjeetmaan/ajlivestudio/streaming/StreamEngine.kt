@@ -35,55 +35,19 @@ class StreamEngine(
 
     private var configuredWidth: Int = 0
     private var configuredHeight: Int = 0
-    private var configuredFps: Int = 0
-    private var configuredBitrate: Int = 0
+    private var configuredFps: Int = 30
+    private var configuredBitrate: Int = 3_000_000
 
     suspend fun initializeCamera(
         videoConfig: EngineVideoConfig,
         targetRotation: Int? = null
     ) {
-
         closeCurrentStreamer()
 
-        val safeWidth =
-            videoConfig.width
-                .coerceAtLeast(2)
-
-        val safeHeight =
-            videoConfig.height
-                .coerceAtLeast(2)
-
-        val safeMaxWidth =
-            videoConfig.maxWidth
-                .coerceAtLeast(2)
-
-        val safeMaxHeight =
-            videoConfig.maxHeight
-                .coerceAtLeast(2)
-
-        /*
-         * Never allow the actual configured resolution
-         * to exceed the selected maximum.
-         */
-        val finalWidth =
-            safeWidth.coerceAtMost(
-                safeMaxWidth
-            )
-
-        val finalHeight =
-            safeHeight.coerceAtMost(
-                safeMaxHeight
-            )
-
-        configuredWidth = finalWidth
-        configuredHeight = finalHeight
-
-        configuredFps =
-            videoConfig.fps.coerceAtLeast(1)
-
-        configuredBitrate =
-            videoConfig.bitrateBps
-                .coerceAtLeast(500_000)
+        configuredWidth = videoConfig.width
+        configuredHeight = videoConfig.height
+        configuredFps = videoConfig.fps
+        configuredBitrate = videoConfig.bitrateBps
 
         val cameraId =
             defaultBackCameraId()
@@ -100,10 +64,6 @@ class StreamEngine(
                 cameraId = cameraId
             )
 
-        /*
-         * Camera target rotation is controlled from
-         * the selected Setup orientation.
-         */
         targetRotation?.let {
             newStreamer.setTargetRotation(it)
         }
@@ -113,63 +73,77 @@ class StreamEngine(
                 startBitrate = 128_000,
                 sampleRate = 44_100,
                 channelConfig =
-                    AudioFormat.CHANNEL_IN_STEREO
+                    AudioFormat.CHANNEL_IN_MONO
             )
 
-        val videoStreamConfig =
+        val videoConfigForStream =
             VideoConfig(
-                startBitrate =
-                    configuredBitrate,
-
+                startBitrate = configuredBitrate,
                 resolution =
                     Size(
                         configuredWidth,
                         configuredHeight
                     ),
-
-                fps =
-                    configuredFps
+                fps = configuredFps
             )
 
         newStreamer.setConfig(
             audioConfig,
-            videoStreamConfig
+            videoConfigForStream
         )
 
         streamer = newStreamer
 
-        awaitCameraSource()
+        /*
+         * Do not mark the camera initialized until
+         * StreamPack actually exposes ICameraSource.
+         */
+        val source = awaitCameraSource()
+
+        if (source == null) {
+            streamer = null
+
+            runCatching {
+                newStreamer.release()
+            }
+
+            throw IllegalStateException(
+                "Stream is not initialized: camera source was not ready"
+            )
+        }
     }
 
     fun updateOverlay(
         bitmap: android.graphics.Bitmap?
     ) {
-        /*
-         * Direct camera diagnostic pipeline.
-         *
-         * No MediaProjection.
-         * No screen recording.
-         * No compositor.
-         */
+        // Overlay pipeline intentionally remains disabled.
     }
 
     suspend fun startCameraPreview(
         surface: Surface
     ) {
-
         val s =
             streamer
                 ?: throw IllegalStateException(
-                    "Streamer is not initialized"
+                    "Stream is not initialized"
                 )
 
+        /*
+         * Preview is started first.
+         * StreamPack then exposes the camera source.
+         */
         s.startPreview(surface)
 
-        awaitCameraSource()
+        val source = awaitCameraSource()
+
+        if (source == null) {
+            throw IllegalStateException(
+                "Stream is not initialized: camera source unavailable"
+            )
+        }
     }
 
     suspend fun stopCameraPreview() {
-
         runCatching {
             streamer?.stopPreview()
         }
@@ -178,11 +152,10 @@ class StreamEngine(
     suspend fun goLive(
         rtmpUrl: String
     ) {
-
         val s =
             streamer
                 ?: throw IllegalStateException(
-                    "Streamer is not initialized"
+                    "Stream is not initialized"
                 )
 
         if (rtmpUrl.isBlank()) {
@@ -191,21 +164,29 @@ class StreamEngine(
             )
         }
 
+        /*
+         * Make sure the camera source exists before
+         * starting the encoder/RTMP stream.
+         */
+        val source = awaitCameraSource()
+
+        if (source == null) {
+            throw IllegalStateException(
+                "Stream is not initialized: camera source unavailable"
+            )
+        }
+
         s.startStream(rtmpUrl)
     }
 
     suspend fun stopLive() {
-
         runCatching {
             streamer?.stopStream()
         }
     }
 
     suspend fun flipCamera(): Boolean {
-
-        val s =
-            streamer
-                ?: return isFront
+        val s = streamer ?: return isFront
 
         val nextId =
             if (isFront) {
@@ -219,7 +200,6 @@ class StreamEngine(
         }
 
         return try {
-
             s.setCameraId(nextId)
 
             currentCameraId = nextId
@@ -228,9 +208,7 @@ class StreamEngine(
             awaitCameraSource()
 
             isFront
-
         } catch (_: Exception) {
-
             isFront
         }
     }
@@ -238,9 +216,7 @@ class StreamEngine(
     fun muteAudio(
         muted: Boolean
     ) {
-
         try {
-
             val audioSettings =
                 streamer
                     ?.javaClass
@@ -259,24 +235,19 @@ class StreamEngine(
                     audioSettings,
                     muted
                 )
-
         } catch (_: Exception) {
-            // Optional feature.
         }
     }
 
     suspend fun awaitCameraSource(
-        timeoutMs: Long = 5_000
+        timeoutMs: Long = 10_000
     ): ICameraSource? {
 
-        val s =
-            streamer
-                ?: return null
+        val s = streamer ?: return null
 
         return withTimeoutOrNull(
             timeoutMs
         ) {
-
             s.videoInput.sourceFlow
                 .filterNotNull()
                 .filterIsInstance<ICameraSource>()
@@ -285,42 +256,31 @@ class StreamEngine(
     }
 
     suspend fun isTorchAvailableAsync(): Boolean {
-
         val source =
             awaitCameraSource()
                 ?: return false
 
-        return source
-            .settings
-            .flash
-            .isAvailable
+        return source.settings.flash.isAvailable
     }
 
     suspend fun setTorch(
         enabled: Boolean
     ) {
-
         val source =
             awaitCameraSource()
                 ?: throw IllegalStateException(
                     "Camera source is not ready"
                 )
 
-        if (
-            !source
-                .settings
-                .flash
-                .isAvailable
-        ) {
+        if (!source.settings.flash.isAvailable) {
             throw IllegalStateException(
                 "Flashlight is not available on this camera"
             )
         }
 
-        source
-            .settings
-            .flash
-            .setIsEnable(enabled)
+        source.settings.flash.setIsEnable(
+            enabled
+        )
     }
 
     fun isFrontCamera(): Boolean {
@@ -328,7 +288,6 @@ class StreamEngine(
     }
 
     private suspend fun closeCurrentStreamer() {
-
         runCatching {
             streamer?.stopPreview()
         }
@@ -345,7 +304,6 @@ class StreamEngine(
     }
 
     suspend fun release() {
-
         runCatching {
             streamer?.stopPreview()
         }
@@ -362,27 +320,20 @@ class StreamEngine(
     }
 
     fun close() {
-
-        runBlocking(
-            Dispatchers.Default
-        ) {
+        runBlocking(Dispatchers.Default) {
             release()
         }
     }
 
     private fun defaultBackCameraId(): String? {
-
         return findCameraId(
-            CameraCharacteristics
-                .LENS_FACING_BACK
+            CameraCharacteristics.LENS_FACING_BACK
         )
     }
 
     private fun defaultFrontCameraId(): String? {
-
         return findCameraId(
-            CameraCharacteristics
-                .LENS_FACING_FRONT
+            CameraCharacteristics.LENS_FACING_FRONT
         )
     }
 
@@ -397,12 +348,10 @@ class StreamEngine(
 
         return manager.cameraIdList
             .firstOrNull { id ->
-
                 manager
                     .getCameraCharacteristics(id)
                     .get(
-                        CameraCharacteristics
-                            .LENS_FACING
+                        CameraCharacteristics.LENS_FACING
                     ) == facing
             }
     }
@@ -412,19 +361,5 @@ data class EngineVideoConfig(
     val width: Int,
     val height: Int,
     val fps: Int,
-    val bitrateBps: Int,
-
-    /*
-     * Hard maximum resolution.
-     *
-     * For 720p:
-     * maxWidth = 1280
-     * maxHeight = 720
-     *
-     * For 1080p:
-     * maxWidth = 1920
-     * maxHeight = 1080
-     */
-    val maxWidth: Int = width,
-    val maxHeight: Int = height
+    val bitrateBps: Int
 )
