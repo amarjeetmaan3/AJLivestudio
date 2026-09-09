@@ -14,8 +14,9 @@ import com.amarjeetmaan.ajlivestudio.streaming.StreamEngine
 import com.amarjeetmaan.ajlivestudio.ui.overlay.OverlayItem
 import com.amarjeetmaan.ajlivestudio.ui.overlay.OverlayRenderer
 import com.amarjeetmaan.ajlivestudio.ui.setup.BitratePreset
-import com.amarjeetmaan.ajlivestudio.ui.setup.StudioSetupState
 import com.amarjeetmaan.ajlivestudio.ui.setup.StreamOrientation
+import com.amarjeetmaan.ajlivestudio.ui.setup.StudioSetupState
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 class CameraViewModel : ViewModel() {
@@ -25,151 +26,271 @@ class CameraViewModel : ViewModel() {
 
     private var engine: StreamEngine? = null
     private var audioController: AudioController? = null
+
     private var activePreviewSurface: Surface? = null
     private var currentSetupState: StudioSetupState? = null
 
-    fun initialize(context: Context, setupState: StudioSetupState) {
-        if (engine != null && currentSetupState == setupState) return
+    private var initializeJob: Job? = null
+    private var previewJob: Job? = null
+
+    fun initialize(
+        context: Context,
+        setupState: StudioSetupState
+    ) {
+
+        if (
+            engine != null &&
+            currentSetupState == setupState
+        ) {
+            /*
+             * If the TextureView already appeared while the
+             * same setup is active, make sure preview is running.
+             */
+            activePreviewSurface?.let {
+                startPreview(it)
+            }
+            return
+        }
+
+        initializeJob?.cancel()
+        previewJob?.cancel()
 
         currentSetupState = setupState
 
         val oldEngine = engine
         engine = null
 
-        viewModelScope.launch {
-            runCatching {
-                oldEngine?.release()
-            }
+        initializeJob =
+            viewModelScope.launch {
 
-            val appContext = context.applicationContext
-            val newEngine = StreamEngine(appContext)
-
-            audioController?.let {
-                runCatching { it.release() }
-            }
-            audioController = AudioController(appContext)
-
-            uiState = uiState.copy(
-                cameraReady = false,
-                streamState = StreamState.IDLE,
-                isTorchOn = false,
-                isTorchAvailable = false,
-                isMicMuted = audioController?.isMicMuted() ?: false,
-                errorMessage = null
-            )
-
-            engine = newEngine
-
-            val width: Int
-            val height: Int
-
-            /*
-             * IMPORTANT:
-             * Portrait must use portrait dimensions.
-             * Landscape must use landscape dimensions.
-             *
-             * The setup resolution enum is always stored as:
-             * 720p  = 1280x720
-             * 1080p = 1920x1080
-             */
-            if (setupState.orientation == StreamOrientation.PORTRAIT) {
-                width = minOf(
-                    setupState.resolution.width,
-                    setupState.resolution.height
-                )
-                height = maxOf(
-                    setupState.resolution.width,
-                    setupState.resolution.height
-                )
-            } else {
-                width = maxOf(
-                    setupState.resolution.width,
-                    setupState.resolution.height
-                )
-                height = minOf(
-                    setupState.resolution.width,
-                    setupState.resolution.height
-                )
-            }
-
-            val targetRotation =
-                if (setupState.orientation == StreamOrientation.LANDSCAPE) {
-                    Surface.ROTATION_90
-                } else {
-                    Surface.ROTATION_0
+                runCatching {
+                    oldEngine?.release()
                 }
 
-            runCatching {
-                newEngine.initializeCamera(
-                    videoConfig = EngineVideoConfig(
-                        width = width,
-                        height = height,
-                        fps = setupState.frameRate.value,
-                        bitrateBps = resolveBitrateBps(
-                            setupState.bitrate,
-                            width,
-                            height
+                val appContext =
+                    context.applicationContext
+
+                audioController?.let {
+                    runCatching {
+                        it.release()
+                    }
+                }
+
+                audioController =
+                    AudioController(
+                        appContext
+                    )
+
+                uiState =
+                    uiState.copy(
+                        cameraReady = false,
+                        streamState = StreamState.IDLE,
+                        isFrontCamera = false,
+                        isTorchOn = false,
+                        isTorchAvailable = false,
+                        isMicMuted =
+                            audioController
+                                ?.isMicMuted()
+                                ?: false,
+                        errorMessage = null
+                    )
+
+                val newEngine =
+                    StreamEngine(
+                        appContext
+                    )
+
+                engine = newEngine
+
+                val landscape =
+                    setupState.orientation ==
+                            StreamOrientation.LANDSCAPE
+
+                /*
+                 * Resolution is capped by the selected setup.
+                 *
+                 * 720p:
+                 *   Landscape = 1280x720
+                 *   Portrait  = 720x1280
+                 *
+                 * 1080p:
+                 *   Landscape = 1920x1080
+                 *   Portrait  = 1080x1920
+                 */
+                val width =
+                    if (landscape) {
+                        maxOf(
+                            setupState.resolution.width,
+                            setupState.resolution.height
                         )
-                    ),
-                    targetRotation = targetRotation
-                )
+                    } else {
+                        minOf(
+                            setupState.resolution.width,
+                            setupState.resolution.height
+                        )
+                    }
 
-                activePreviewSurface?.let { surface ->
-                    newEngine.startCameraPreview(surface)
+                val height =
+                    if (landscape) {
+                        minOf(
+                            setupState.resolution.width,
+                            setupState.resolution.height
+                        )
+                    } else {
+                        maxOf(
+                            setupState.resolution.width,
+                            setupState.resolution.height
+                        )
+                    }
+
+                /*
+                 * Keep selected resolution as the MAXIMUM.
+                 * Never upgrade 720p to 1080p.
+                 *
+                 * Network adaptation, if StreamPack/encoder
+                 * performs it, can go DOWN from this value.
+                 */
+                val bitrate =
+                    resolveBitrateBps(
+                        setupState.bitrate,
+                        width,
+                        height
+                    )
+
+                val rotation =
+                    if (landscape) {
+                        Surface.ROTATION_90
+                    } else {
+                        Surface.ROTATION_0
+                    }
+
+                runCatching {
+
+                    /*
+                     * IMPORTANT:
+                     *
+                     * initializeCamera() ONLY creates/configures
+                     * StreamPack.
+                     *
+                     * It does NOT wait for camera source here,
+                     * because TextureView may not have created its
+                     * Surface yet.
+                     */
+                    newEngine.initializeCamera(
+                        videoConfig =
+                            EngineVideoConfig(
+                                width = width,
+                                height = height,
+                                fps =
+                                    setupState
+                                        .frameRate
+                                        .value,
+                                bitrateBps = bitrate
+                            ),
+                        targetRotation = rotation
+                    )
+
+                    uiState =
+                        uiState.copy(
+                            cameraReady = true,
+                            streamState = StreamState.IDLE,
+                            errorMessage = null
+                        )
+
+                    /*
+                     * If TextureView was already available,
+                     * start it now.
+                     */
+                    activePreviewSurface?.let {
+                        startPreview(it)
+                    }
+
+                }.onFailure { error ->
+
+                    engine = null
+
+                    uiState =
+                        uiState.copy(
+                            cameraReady = false,
+                            streamState = StreamState.ERROR,
+                            errorMessage =
+                                error.message
+                                    ?: "Camera initialization failed"
+                        )
+
+                    runCatching {
+                        newEngine.release()
+                    }
                 }
-
-                newEngine.awaitCameraSource()
-
-                uiState = uiState.copy(
-                    cameraReady = true,
-                    isTorchAvailable =
-                        newEngine.isTorchAvailableAsync(),
-                    errorMessage = null
-                )
-            }.onFailure { error ->
-                uiState = uiState.copy(
-                    cameraReady = false,
-                    streamState = StreamState.ERROR,
-                    errorMessage =
-                        error.message
-                            ?: "Camera initialization failed"
-                )
             }
-        }
     }
 
-    fun startPreview(surface: Surface) {
+    fun startPreview(
+        surface: Surface
+    ) {
+
         activePreviewSurface = surface
 
-        val currentEngine = engine ?: return
+        val currentEngine =
+            engine
+                ?: return
 
-        viewModelScope.launch {
-            runCatching {
-                currentEngine.startCameraPreview(surface)
-                currentEngine.awaitCameraSource()
-            }.onSuccess {
-                uiState = uiState.copy(
-                    cameraReady = true,
-                    isTorchAvailable =
-                        currentEngine.isTorchAvailableAsync(),
-                    errorMessage = null
-                )
-            }.onFailure { error ->
-                uiState = uiState.copy(
-                    cameraReady = false,
-                    streamState = StreamState.ERROR,
-                    errorMessage =
-                        error.message
-                            ?: "Unable to start camera preview"
-                )
-            }
+        if (!uiState.cameraReady) {
+            /*
+             * initialize() will start the preview when
+             * initialization completes.
+             */
+            return
         }
+
+        previewJob?.cancel()
+
+        previewJob =
+            viewModelScope.launch {
+
+                runCatching {
+
+                    currentEngine.startCameraPreview(
+                        surface
+                    )
+
+                }.onSuccess {
+
+                    uiState =
+                        uiState.copy(
+                            cameraReady = true,
+                            isTorchAvailable =
+                                currentEngine
+                                    .isTorchAvailableAsync(),
+                            errorMessage = null
+                        )
+
+                }.onFailure { error ->
+
+                    uiState =
+                        uiState.copy(
+                            cameraReady = false,
+                            streamState = StreamState.ERROR,
+                            errorMessage =
+                                error.message
+                                    ?: "Unable to start camera preview"
+                        )
+                }
+            }
     }
 
-    fun stopPreview(surface: Surface? = activePreviewSurface) {
-        if (surface == null || surface === activePreviewSurface) {
+    fun stopPreview(
+        surface: Surface? = activePreviewSurface
+    ) {
+
+        if (
+            surface == null ||
+            surface === activePreviewSurface
+        ) {
             activePreviewSurface = null
         }
+
+        previewJob?.cancel()
 
         viewModelScope.launch {
             runCatching {
@@ -184,10 +305,17 @@ class CameraViewModel : ViewModel() {
         containerWidthPx: Int,
         containerHeightPx: Int
     ) {
-        val state = currentSetupState ?: return
+
+        val state =
+            currentSetupState
+                ?: return
+
+        val landscape =
+            state.orientation ==
+                    StreamOrientation.LANDSCAPE
 
         val videoWidth =
-            if (state.orientation == StreamOrientation.LANDSCAPE) {
+            if (landscape) {
                 maxOf(
                     state.resolution.width,
                     state.resolution.height
@@ -200,7 +328,7 @@ class CameraViewModel : ViewModel() {
             }
 
         val videoHeight =
-            if (state.orientation == StreamOrientation.LANDSCAPE) {
+            if (landscape) {
                 minOf(
                     state.resolution.width,
                     state.resolution.height
@@ -216,8 +344,10 @@ class CameraViewModel : ViewModel() {
             OverlayRenderer.render(
                 context = context,
                 items = items,
-                containerWidthPx = containerWidthPx,
-                containerHeightPx = containerHeightPx,
+                containerWidthPx =
+                    containerWidthPx,
+                containerHeightPx =
+                    containerHeightPx,
                 videoWidth = videoWidth,
                 videoHeight = videoHeight
             )
@@ -225,206 +355,315 @@ class CameraViewModel : ViewModel() {
         engine?.updateOverlay(bitmap)
     }
 
-    fun goLive(rtmpUrl: String) {
-        if (!uiState.cameraReady) {
-            uiState = uiState.copy(
-                streamState = StreamState.ERROR,
-                errorMessage = "Camera/Stream is not initialized"
-            )
+    fun goLive(
+        rtmpUrl: String
+    ) {
+
+        val currentEngine =
+            engine
+
+        if (
+            currentEngine == null ||
+            !uiState.cameraReady
+        ) {
+
+            uiState =
+                uiState.copy(
+                    streamState = StreamState.ERROR,
+                    errorMessage =
+                        "Camera/Stream is not initialized"
+                )
+
             return
         }
 
         if (rtmpUrl.isBlank()) {
-            uiState = uiState.copy(
-                streamState = StreamState.ERROR,
-                errorMessage = "RTMP URL is empty"
-            )
+
+            uiState =
+                uiState.copy(
+                    streamState = StreamState.ERROR,
+                    errorMessage =
+                        "RTMP URL is empty"
+                )
+
             return
         }
 
-        uiState = uiState.copy(
-            streamState = StreamState.CONNECTING,
-            errorMessage = null
-        )
+        uiState =
+            uiState.copy(
+                streamState = StreamState.CONNECTING,
+                errorMessage = null
+            )
 
         viewModelScope.launch {
-            runCatching {
-                val currentEngine =
-                    engine
-                        ?: throw IllegalStateException(
-                            "Stream is not initialized"
-                        )
 
-                currentEngine.goLive(rtmpUrl)
+            runCatching {
+
+                currentEngine.goLive(
+                    rtmpUrl
+                )
+
             }.onSuccess {
-                uiState = uiState.copy(
-                    streamState = StreamState.LIVE,
-                    errorMessage = null
-                )
+
+                uiState =
+                    uiState.copy(
+                        streamState = StreamState.LIVE,
+                        errorMessage = null
+                    )
+
             }.onFailure { error ->
-                uiState = uiState.copy(
-                    streamState = StreamState.ERROR,
-                    errorMessage =
-                        error.message
-                            ?: "Unable to start live stream"
-                )
+
+                uiState =
+                    uiState.copy(
+                        streamState = StreamState.ERROR,
+                        errorMessage =
+                            error.message
+                                ?: "Unable to start live stream"
+                    )
             }
         }
     }
 
     fun stopLive() {
+
         viewModelScope.launch {
+
             runCatching {
                 engine?.stopLive()
+
             }.onSuccess {
-                uiState = uiState.copy(
-                    streamState = StreamState.IDLE,
-                    errorMessage = null
-                )
+
+                uiState =
+                    uiState.copy(
+                        streamState = StreamState.IDLE,
+                        errorMessage = null
+                    )
+
             }.onFailure { error ->
-                uiState = uiState.copy(
-                    streamState = StreamState.ERROR,
-                    errorMessage =
-                        error.message
-                            ?: "Unable to stop live stream"
-                )
+
+                uiState =
+                    uiState.copy(
+                        streamState = StreamState.ERROR,
+                        errorMessage =
+                            error.message
+                                ?: "Unable to stop live stream"
+                    )
             }
         }
     }
 
     fun flip() {
-        if (uiState.streamState == StreamState.LIVE) return
 
-        val currentEngine = engine ?: return
+        if (
+            uiState.streamState ==
+                    StreamState.LIVE
+        ) {
+            return
+        }
+
+        val currentEngine =
+            engine
+                ?: return
 
         viewModelScope.launch {
+
             runCatching {
+
                 currentEngine.flipCamera()
+
             }.onSuccess { nowFront ->
 
-                uiState = uiState.copy(
-                    isFrontCamera = nowFront,
-                    isTorchOn = false,
-                    isTorchAvailable =
-                        currentEngine.isTorchAvailableAsync(),
-                    errorMessage = null
-                )
+                uiState =
+                    uiState.copy(
+                        isFrontCamera = nowFront,
+                        isTorchOn = false,
+                        isTorchAvailable =
+                            currentEngine
+                                .isTorchAvailableAsync(),
+                        errorMessage = null
+                    )
 
                 activePreviewSurface?.let {
-                    currentEngine.startCameraPreview(it)
+                    currentEngine.startCameraPreview(
+                        it
+                    )
                 }
+
             }.onFailure { error ->
-                uiState = uiState.copy(
-                    errorMessage =
-                        error.message
-                            ?: "Unable to switch camera"
-                )
+
+                uiState =
+                    uiState.copy(
+                        errorMessage =
+                            error.message
+                                ?: "Unable to switch camera"
+                    )
             }
         }
     }
 
     fun toggleTorch() {
-        val currentEngine = engine ?: return
+
+        val currentEngine =
+            engine
+                ?: return
 
         viewModelScope.launch {
+
             val available =
                 runCatching {
-                    currentEngine.isTorchAvailableAsync()
+                    currentEngine
+                        .isTorchAvailableAsync()
                 }.getOrDefault(false)
 
             if (!available) {
-                uiState = uiState.copy(
-                    isTorchAvailable = false,
-                    isTorchOn = false,
-                    errorMessage =
-                        "Flashlight is not available on this camera"
-                )
+
+                uiState =
+                    uiState.copy(
+                        isTorchAvailable = false,
+                        isTorchOn = false,
+                        errorMessage =
+                            "Flashlight is not available on this camera"
+                    )
+
                 return@launch
             }
 
-            val newState = !uiState.isTorchOn
+            val newState =
+                !uiState.isTorchOn
 
             runCatching {
-                currentEngine.setTorch(newState)
+
+                currentEngine.setTorch(
+                    newState
+                )
+
             }.onSuccess {
-                uiState = uiState.copy(
-                    isTorchAvailable = true,
-                    isTorchOn = newState,
-                    errorMessage = null
-                )
+
+                uiState =
+                    uiState.copy(
+                        isTorchAvailable = true,
+                        isTorchOn = newState,
+                        errorMessage = null
+                    )
+
             }.onFailure { error ->
-                uiState = uiState.copy(
-                    isTorchOn = false,
-                    errorMessage =
-                        error.message
-                            ?: "Unable to change flashlight"
-                )
+
+                uiState =
+                    uiState.copy(
+                        isTorchOn = false,
+                        errorMessage =
+                            error.message
+                                ?: "Unable to change flashlight"
+                    )
             }
         }
     }
 
-    fun toggleMic(context: Context) {
-        val newMuted = !uiState.isMicMuted
+    fun toggleMic(
+        context: Context
+    ) {
 
-        uiState = uiState.copy(
-            isMicMuted = newMuted
+        val newMuted =
+            !uiState.isMicMuted
+
+        uiState =
+            uiState.copy(
+                isMicMuted = newMuted
+            )
+
+        audioController?.setMicMuted(
+            newMuted
         )
 
-        audioController?.setMicMuted(newMuted)
-
         runCatching {
+
             val audioManager =
                 context.getSystemService(
                     Context.AUDIO_SERVICE
                 ) as android.media.AudioManager
 
-            audioManager.isMicrophoneMute = newMuted
+            audioManager.isMicrophoneMute =
+                newMuted
 
-            engine?.muteAudio(newMuted)
+            engine?.muteAudio(
+                newMuted
+            )
         }
     }
 
-    fun setZoom(ratio: Float) {
-        uiState = uiState.copy(
-            zoomRatio = ratio
-        )
+    fun setZoom(
+        ratio: Float
+    ) {
+
+        uiState =
+            uiState.copy(
+                zoomRatio = ratio
+            )
     }
 
-    fun setExposure(index: Int) {
-        uiState = uiState.copy(
-            exposureIndex = index
-        )
+    fun setExposure(
+        index: Int
+    ) {
+
+        uiState =
+            uiState.copy(
+                exposureIndex = index
+            )
     }
 
-    fun setMicGain(percent: Int) {
-        uiState = uiState.copy(
-            micGainPercent =
-                percent.coerceIn(0, 200)
-        )
+    fun setMicGain(
+        percent: Int
+    ) {
+
+        uiState =
+            uiState.copy(
+                micGainPercent =
+                    percent.coerceIn(
+                        0,
+                        200
+                    )
+            )
     }
 
-    fun setMusicVolume(percent: Int) {
-        uiState = uiState.copy(
-            musicVolumePercent =
-                percent.coerceIn(0, 100)
-        )
+    fun setMusicVolume(
+        percent: Int
+    ) {
+
+        uiState =
+            uiState.copy(
+                musicVolumePercent =
+                    percent.coerceIn(
+                        0,
+                        100
+                    )
+            )
     }
 
     fun connectBluetoothMic() {
-        audioController?.startBluetoothScoIfAvailable()
+        audioController
+            ?.startBluetoothScoIfAvailable()
     }
 
     fun setWhiteBalance(
         preset: WhiteBalancePreset
     ) {
-        // Kept for UI compatibility.
+        uiState =
+            uiState.copy(
+                whiteBalance = preset
+            )
     }
 
     override fun onCleared() {
+
+        initializeJob?.cancel()
+        previewJob?.cancel()
+
         engine?.close()
+
         engine = null
         audioController = null
         activePreviewSurface = null
+
         super.onCleared()
     }
 
@@ -433,22 +672,27 @@ class CameraViewModel : ViewModel() {
         width: Int,
         height: Int
     ): Int {
+
         val selected =
             preset.kbps
                 ?: when {
-                    width >= 1920 || height >= 1080 ->
+
+                    width >= 1920 ||
+                            height >= 1080 ->
                         5_000
 
-                    width >= 1280 || height >= 720 ->
+                    width >= 1280 ||
+                            height >= 720 ->
                         3_000
 
                     else ->
                         1_500
                 }
 
-        return selected.coerceIn(
-            800,
-            8_000
-        ) * 1_000
+        return selected
+            .coerceIn(
+                800,
+                8_000
+            ) * 1_000
     }
 }
