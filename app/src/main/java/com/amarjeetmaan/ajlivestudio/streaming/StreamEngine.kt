@@ -33,8 +33,8 @@ class StreamEngine(
     private var currentCameraId: String = ""
     private var isFront: Boolean = false
 
-    private var configuredWidth: Int = 0
-    private var configuredHeight: Int = 0
+    private var configuredWidth: Int = 1280
+    private var configuredHeight: Int = 720
     private var configuredFps: Int = 30
     private var configuredBitrate: Int = 3_000_000
 
@@ -64,16 +64,22 @@ class StreamEngine(
                 cameraId = cameraId
             )
 
-        targetRotation?.let {
-            newStreamer.setTargetRotation(it)
+        /*
+         * Rotation is optional.
+         * It must NOT be allowed to break StreamPack
+         * initialization.
+         */
+        targetRotation?.let { rotation ->
+            runCatching {
+                newStreamer.setTargetRotation(rotation)
+            }
         }
 
         val audioConfig =
             AudioConfig(
                 startBitrate = 128_000,
                 sampleRate = 44_100,
-                channelConfig =
-                    AudioFormat.CHANNEL_IN_MONO
+                channelConfig = AudioFormat.CHANNEL_IN_MONO
             )
 
         val videoConfigForStream =
@@ -87,36 +93,34 @@ class StreamEngine(
                 fps = configuredFps
             )
 
+        /*
+         * IMPORTANT:
+         *
+         * Do NOT wait for sourceFlow here.
+         *
+         * StreamPack creates/exposes the camera source when
+         * startPreview() is called with a real Surface.
+         *
+         * Previously this function waited for sourceFlow
+         * BEFORE the TextureView Surface existed.
+         * That caused the artificial:
+         *
+         * "Stream is not initialized"
+         *
+         * error.
+         */
         newStreamer.setConfig(
             audioConfig,
             videoConfigForStream
         )
 
         streamer = newStreamer
-
-        /*
-         * Do not mark the camera initialized until
-         * StreamPack actually exposes ICameraSource.
-         */
-        val source = awaitCameraSource()
-
-        if (source == null) {
-            streamer = null
-
-            runCatching {
-                newStreamer.release()
-            }
-
-            throw IllegalStateException(
-                "Stream is not initialized: camera source was not ready"
-            )
-        }
     }
 
     fun updateOverlay(
         bitmap: android.graphics.Bitmap?
     ) {
-        // Overlay pipeline intentionally remains disabled.
+        // Overlay pipeline remains disabled here.
     }
 
     suspend fun startCameraPreview(
@@ -129,16 +133,22 @@ class StreamEngine(
                 )
 
         /*
-         * Preview is started first.
-         * StreamPack then exposes the camera source.
+         * This is the point where the actual camera Surface
+         * becomes available to StreamPack.
          */
         s.startPreview(surface)
 
-        val source = awaitCameraSource()
+        /*
+         * Now wait for the real camera source.
+         */
+        val source =
+            awaitCameraSource(
+                timeoutMs = 10_000
+            )
 
         if (source == null) {
             throw IllegalStateException(
-                "Stream is not initialized: camera source unavailable"
+                "Camera source did not become ready"
             )
         }
     }
@@ -165,14 +175,17 @@ class StreamEngine(
         }
 
         /*
-         * Make sure the camera source exists before
-         * starting the encoder/RTMP stream.
+         * Preview must have successfully created the camera
+         * source before RTMP streaming starts.
          */
-        val source = awaitCameraSource()
+        val source =
+            awaitCameraSource(
+                timeoutMs = 5_000
+            )
 
         if (source == null) {
             throw IllegalStateException(
-                "Stream is not initialized: camera source unavailable"
+                "Camera source is not ready"
             )
         }
 
@@ -186,7 +199,9 @@ class StreamEngine(
     }
 
     suspend fun flipCamera(): Boolean {
-        val s = streamer ?: return isFront
+        val s =
+            streamer
+                ?: return isFront
 
         val nextId =
             if (isFront) {
@@ -205,7 +220,10 @@ class StreamEngine(
             currentCameraId = nextId
             isFront = !isFront
 
-            awaitCameraSource()
+            /*
+             * Give StreamPack time to expose the new source.
+             */
+            awaitCameraSource(5_000)
 
             isFront
         } catch (_: Exception) {
@@ -243,7 +261,9 @@ class StreamEngine(
         timeoutMs: Long = 10_000
     ): ICameraSource? {
 
-        val s = streamer ?: return null
+        val s =
+            streamer
+                ?: return null
 
         return withTimeoutOrNull(
             timeoutMs
@@ -257,7 +277,9 @@ class StreamEngine(
 
     suspend fun isTorchAvailableAsync(): Boolean {
         val source =
-            awaitCameraSource()
+            awaitCameraSource(
+                timeoutMs = 3_000
+            )
                 ?: return false
 
         return source.settings.flash.isAvailable
@@ -267,7 +289,9 @@ class StreamEngine(
         enabled: Boolean
     ) {
         val source =
-            awaitCameraSource()
+            awaitCameraSource(
+                timeoutMs = 3_000
+            )
                 ?: throw IllegalStateException(
                     "Camera source is not ready"
                 )
@@ -288,6 +312,7 @@ class StreamEngine(
     }
 
     private suspend fun closeCurrentStreamer() {
+
         runCatching {
             streamer?.stopPreview()
         }
@@ -304,6 +329,7 @@ class StreamEngine(
     }
 
     suspend fun release() {
+
         runCatching {
             streamer?.stopPreview()
         }
@@ -348,6 +374,7 @@ class StreamEngine(
 
         return manager.cameraIdList
             .firstOrNull { id ->
+
                 manager
                     .getCameraCharacteristics(id)
                     .get(
