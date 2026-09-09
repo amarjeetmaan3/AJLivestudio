@@ -14,8 +14,8 @@ import com.amarjeetmaan.ajlivestudio.streaming.StreamEngine
 import com.amarjeetmaan.ajlivestudio.ui.overlay.OverlayItem
 import com.amarjeetmaan.ajlivestudio.ui.overlay.OverlayRenderer
 import com.amarjeetmaan.ajlivestudio.ui.setup.BitratePreset
-import com.amarjeetmaan.ajlivestudio.ui.setup.StreamOrientation
 import com.amarjeetmaan.ajlivestudio.ui.setup.StudioSetupState
+import com.amarjeetmaan.ajlivestudio.ui.setup.StreamOrientation
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
@@ -26,7 +26,6 @@ class CameraViewModel : ViewModel() {
 
     private var engine: StreamEngine? = null
     private var audioController: AudioController? = null
-
     private var activePreviewSurface: Surface? = null
     private var currentSetupState: StudioSetupState? = null
 
@@ -37,15 +36,10 @@ class CameraViewModel : ViewModel() {
         context: Context,
         setupState: StudioSetupState
     ) {
-
         if (
             engine != null &&
             currentSetupState == setupState
         ) {
-            /*
-             * If the TextureView already appeared while the
-             * same setup is active, make sure preview is running.
-             */
             activePreviewSurface?.let {
                 startPreview(it)
             }
@@ -60,186 +54,131 @@ class CameraViewModel : ViewModel() {
         val oldEngine = engine
         engine = null
 
-        initializeJob =
-            viewModelScope.launch {
+        viewModelScope.launch {
 
-                runCatching {
-                    oldEngine?.release()
+            runCatching {
+                oldEngine?.release()
+            }
+
+            val appContext = context.applicationContext
+
+            audioController =
+                AudioController(appContext)
+
+            uiState = uiState.copy(
+                cameraReady = false,
+                streamState = StreamState.IDLE,
+                isFrontCamera = false,
+                isTorchOn = false,
+                isTorchAvailable = false,
+                isMicMuted =
+                    audioController?.isMicMuted() ?: false,
+                errorMessage = null
+            )
+
+            val newEngine =
+                StreamEngine(appContext)
+
+            engine = newEngine
+
+            val landscape =
+                setupState.orientation ==
+                    StreamOrientation.LANDSCAPE
+
+            val width =
+                if (landscape) {
+                    maxOf(
+                        setupState.resolution.width,
+                        setupState.resolution.height
+                    )
+                } else {
+                    minOf(
+                        setupState.resolution.width,
+                        setupState.resolution.height
+                    )
                 }
 
-                val appContext =
-                    context.applicationContext
-
-                audioController?.let {
-                    runCatching {
-                        it.release()
-                    }
+            val height =
+                if (landscape) {
+                    minOf(
+                        setupState.resolution.width,
+                        setupState.resolution.height
+                    )
+                } else {
+                    maxOf(
+                        setupState.resolution.width,
+                        setupState.resolution.height
+                    )
                 }
 
-                audioController =
-                    AudioController(
-                        appContext
-                    )
+            val bitrate =
+                resolveBitrateBps(
+                    setupState.bitrate,
+                    width,
+                    height
+                )
 
-                uiState =
-                    uiState.copy(
-                        cameraReady = false,
-                        streamState = StreamState.IDLE,
-                        isFrontCamera = false,
-                        isTorchOn = false,
-                        isTorchAvailable = false,
-                        isMicMuted =
-                            audioController
-                                ?.isMicMuted()
-                                ?: false,
-                        errorMessage = null
-                    )
+            val rotation =
+                if (landscape) {
+                    Surface.ROTATION_90
+                } else {
+                    Surface.ROTATION_0
+                }
 
-                val newEngine =
-                    StreamEngine(
-                        appContext
-                    )
+            runCatching {
 
-                engine = newEngine
+                newEngine.initializeCamera(
+                    videoConfig =
+                        EngineVideoConfig(
+                            width = width,
+                            height = height,
+                            fps =
+                                setupState
+                                    .frameRate
+                                    .value,
+                            bitrateBps = bitrate
+                        ),
+                    targetRotation = rotation
+                )
 
-                val landscape =
-                    setupState.orientation ==
-                            StreamOrientation.LANDSCAPE
+                uiState = uiState.copy(
+                    cameraReady = true,
+                    streamState = StreamState.IDLE,
+                    errorMessage = null
+                )
 
-                /*
-                 * Resolution is capped by the selected setup.
-                 *
-                 * 720p:
-                 *   Landscape = 1280x720
-                 *   Portrait  = 720x1280
-                 *
-                 * 1080p:
-                 *   Landscape = 1920x1080
-                 *   Portrait  = 1080x1920
-                 */
-                val width =
-                    if (landscape) {
-                        maxOf(
-                            setupState.resolution.width,
-                            setupState.resolution.height
-                        )
-                    } else {
-                        minOf(
-                            setupState.resolution.width,
-                            setupState.resolution.height
-                        )
-                    }
+                activePreviewSurface?.let {
+                    startPreview(it)
+                }
 
-                val height =
-                    if (landscape) {
-                        minOf(
-                            setupState.resolution.width,
-                            setupState.resolution.height
-                        )
-                    } else {
-                        maxOf(
-                            setupState.resolution.width,
-                            setupState.resolution.height
-                        )
-                    }
+            }.onFailure { error ->
 
-                /*
-                 * Keep selected resolution as the MAXIMUM.
-                 * Never upgrade 720p to 1080p.
-                 *
-                 * Network adaptation, if StreamPack/encoder
-                 * performs it, can go DOWN from this value.
-                 */
-                val bitrate =
-                    resolveBitrateBps(
-                        setupState.bitrate,
-                        width,
-                        height
-                    )
+                engine = null
 
-                val rotation =
-                    if (landscape) {
-                        Surface.ROTATION_90
-                    } else {
-                        Surface.ROTATION_0
-                    }
+                uiState = uiState.copy(
+                    cameraReady = false,
+                    streamState = StreamState.ERROR,
+                    errorMessage =
+                        error.message
+                            ?: "Camera initialization failed"
+                )
 
                 runCatching {
-
-                    /*
-                     * IMPORTANT:
-                     *
-                     * initializeCamera() ONLY creates/configures
-                     * StreamPack.
-                     *
-                     * It does NOT wait for camera source here,
-                     * because TextureView may not have created its
-                     * Surface yet.
-                     */
-                    newEngine.initializeCamera(
-                        videoConfig =
-                            EngineVideoConfig(
-                                width = width,
-                                height = height,
-                                fps =
-                                    setupState
-                                        .frameRate
-                                        .value,
-                                bitrateBps = bitrate
-                            ),
-                        targetRotation = rotation
-                    )
-
-                    uiState =
-                        uiState.copy(
-                            cameraReady = true,
-                            streamState = StreamState.IDLE,
-                            errorMessage = null
-                        )
-
-                    /*
-                     * If TextureView was already available,
-                     * start it now.
-                     */
-                    activePreviewSurface?.let {
-                        startPreview(it)
-                    }
-
-                }.onFailure { error ->
-
-                    engine = null
-
-                    uiState =
-                        uiState.copy(
-                            cameraReady = false,
-                            streamState = StreamState.ERROR,
-                            errorMessage =
-                                error.message
-                                    ?: "Camera initialization failed"
-                        )
-
-                    runCatching {
-                        newEngine.release()
-                    }
+                    newEngine.release()
                 }
             }
+        }
     }
 
     fun startPreview(
         surface: Surface
     ) {
-
         activePreviewSurface = surface
 
         val currentEngine =
-            engine
-                ?: return
+            engine ?: return
 
         if (!uiState.cameraReady) {
-            /*
-             * initialize() will start the preview when
-             * initialization completes.
-             */
             return
         }
 
@@ -282,7 +221,6 @@ class CameraViewModel : ViewModel() {
     fun stopPreview(
         surface: Surface? = activePreviewSurface
     ) {
-
         if (
             surface == null ||
             surface === activePreviewSurface
@@ -305,14 +243,12 @@ class CameraViewModel : ViewModel() {
         containerWidthPx: Int,
         containerHeightPx: Int
     ) {
-
         val state =
-            currentSetupState
-                ?: return
+            currentSetupState ?: return
 
         val landscape =
             state.orientation ==
-                    StreamOrientation.LANDSCAPE
+                StreamOrientation.LANDSCAPE
 
         val videoWidth =
             if (landscape) {
@@ -358,7 +294,6 @@ class CameraViewModel : ViewModel() {
     fun goLive(
         rtmpUrl: String
     ) {
-
         val currentEngine =
             engine
 
@@ -366,26 +301,21 @@ class CameraViewModel : ViewModel() {
             currentEngine == null ||
             !uiState.cameraReady
         ) {
-
             uiState =
                 uiState.copy(
                     streamState = StreamState.ERROR,
                     errorMessage =
                         "Camera/Stream is not initialized"
                 )
-
             return
         }
 
         if (rtmpUrl.isBlank()) {
-
             uiState =
                 uiState.copy(
                     streamState = StreamState.ERROR,
-                    errorMessage =
-                        "RTMP URL is empty"
+                    errorMessage = "RTMP URL is empty"
                 )
-
             return
         }
 
@@ -425,7 +355,6 @@ class CameraViewModel : ViewModel() {
     }
 
     fun stopLive() {
-
         viewModelScope.launch {
 
             runCatching {
@@ -456,14 +385,13 @@ class CameraViewModel : ViewModel() {
 
         if (
             uiState.streamState ==
-                    StreamState.LIVE
+                StreamState.LIVE
         ) {
             return
         }
 
         val currentEngine =
-            engine
-                ?: return
+            engine ?: return
 
         viewModelScope.launch {
 
@@ -484,9 +412,7 @@ class CameraViewModel : ViewModel() {
                     )
 
                 activePreviewSurface?.let {
-                    currentEngine.startCameraPreview(
-                        it
-                    )
+                    currentEngine.startCameraPreview(it)
                 }
 
             }.onFailure { error ->
@@ -504,8 +430,7 @@ class CameraViewModel : ViewModel() {
     fun toggleTorch() {
 
         val currentEngine =
-            engine
-                ?: return
+            engine ?: return
 
         viewModelScope.launch {
 
@@ -562,7 +487,6 @@ class CameraViewModel : ViewModel() {
     fun toggleMic(
         context: Context
     ) {
-
         val newMuted =
             !uiState.isMicMuted
 
@@ -594,7 +518,6 @@ class CameraViewModel : ViewModel() {
     fun setZoom(
         ratio: Float
     ) {
-
         uiState =
             uiState.copy(
                 zoomRatio = ratio
@@ -604,7 +527,6 @@ class CameraViewModel : ViewModel() {
     fun setExposure(
         index: Int
     ) {
-
         uiState =
             uiState.copy(
                 exposureIndex = index
@@ -614,28 +536,20 @@ class CameraViewModel : ViewModel() {
     fun setMicGain(
         percent: Int
     ) {
-
         uiState =
             uiState.copy(
                 micGainPercent =
-                    percent.coerceIn(
-                        0,
-                        200
-                    )
+                    percent.coerceIn(0, 200)
             )
     }
 
     fun setMusicVolume(
         percent: Int
     ) {
-
         uiState =
             uiState.copy(
                 musicVolumePercent =
-                    percent.coerceIn(
-                        0,
-                        100
-                    )
+                    percent.coerceIn(0, 100)
             )
     }
 
@@ -676,13 +590,12 @@ class CameraViewModel : ViewModel() {
         val selected =
             preset.kbps
                 ?: when {
-
                     width >= 1920 ||
-                            height >= 1080 ->
+                        height >= 1080 ->
                         5_000
 
                     width >= 1280 ||
-                            height >= 720 ->
+                        height >= 720 ->
                         3_000
 
                     else ->
